@@ -1,13 +1,13 @@
 use prost::Message;
 
-use crate::protocol::common::*;
-use crate::protocol::hdfs::*;
+use hdfs_types::common::*;
+use hdfs_types::hdfs::*;
 
 use super::method;
 use crate::IpcConnection;
 use crate::IpcError;
 
-super::method! { IpcConnection =>
+super::method! { IpcConnection<S> =>
     get_replica_visible_length, "getReplicaVisibleLength", GetReplicaVisibleLengthRequestProto, GetReplicaVisibleLengthResponseProto;
     refresh_namenodes, "refreshNamenodes", RefreshNamenodesRequestProto, RefreshNamenodesResponseProto;
     delete_block_pool, "deleteBlockPool", DeleteBlockPoolRequestProto, DeleteBlockPoolResponseProto;

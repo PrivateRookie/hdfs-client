@@ -1,13 +1,11 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 use prost::{DecodeError, EncodeError};
 
-use crate::{
-    protocol::{
-        common::RpcCallerContextProto,
-        hdfs::{BlockOpResponseProto, DatanodeIdProto, Status},
-    },
-    IpcConnection, IpcError,
+use crate::{IpcConnection, IpcError};
+use hdfs_types::{
+    common::RpcCallerContextProto,
+    hdfs::{BlockOpResponseProto, DatanodeIdProto, Status},
 };
 
 pub const DATA_TRANSFER_PROTO: u16 = 28;
@@ -47,13 +45,11 @@ impl From<DecodeError> for BlockError {
     }
 }
 
-impl BlockOpResponseProto {
-    pub fn into_err(self) -> Result<Self, BlockError> {
-        if self.status() != Status::Success {
-            Err(BlockError::ServerError(Box::new(self)))
-        } else {
-            Ok(self)
-        }
+fn into_error(error: BlockOpResponseProto) -> Result<BlockOpResponseProto, BlockError> {
+    if error.status() != Status::Success {
+        Err(BlockError::ServerError(Box::new(error)))
+    } else {
+        Ok(error)
     }
 }
 
@@ -91,12 +87,14 @@ pub struct FSConfig {
 }
 
 impl FSConfig {
-    pub fn connect(
+    pub fn connect<S: Read + Write>(
         &self,
+        mut connect_fn: impl FnMut() -> io::Result<S>,
         ctx: impl Into<Option<RpcCallerContextProto>>,
-    ) -> Result<IpcConnection, IpcError> {
+    ) -> Result<IpcConnection<S>, IpcError> {
+        let stream = connect_fn()?;
         IpcConnection::connect(
-            (self.name_node.clone(), self.port),
+            stream,
             &self.user,
             ctx.into().unwrap_or_else(|| RpcCallerContextProto {
                 context: concat!("hdfs-rust-client-", env!("CARGO_PKG_VERSION")).into(),

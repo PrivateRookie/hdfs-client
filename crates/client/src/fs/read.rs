@@ -1,13 +1,11 @@
 use super::{
     get_data_node_addr, read_be_u16, read_be_u32, CLIENT_NAME, DATA_TRANSFER_PROTO, READ_BLOCK,
 };
-use crate::{
-    protocol::hdfs::{
-        hdfs_file_status_proto::FileType, BaseHeaderProto, BlockOpResponseProto,
-        ClientOperationHeaderProto, ClientReadStatusProto, GetBlockLocationsRequestProto,
-        GetFileInfoRequestProto, LocatedBlockProto, OpReadBlockProto, PacketHeaderProto, Status,
-    },
-    IpcConnection,
+use crate::IpcConnection;
+use hdfs_types::hdfs::{
+    hdfs_file_status_proto::FileType, BaseHeaderProto, BlockOpResponseProto,
+    ClientOperationHeaderProto, ClientReadStatusProto, GetBlockLocationsRequestProto,
+    GetFileInfoRequestProto, LocatedBlockProto, OpReadBlockProto, PacketHeaderProto, Status,
 };
 use prost::{
     self,
@@ -178,7 +176,10 @@ pub struct FileReader {
 }
 
 impl FileReader {
-    pub fn new(ipc: &mut IpcConnection, path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn new<S: Read + Write>(
+        ipc: &mut IpcConnection<S>,
+        path: impl AsRef<Path>,
+    ) -> io::Result<Self> {
         let (_, info) = ipc.get_file_info(GetFileInfoRequestProto {
             src: path.as_ref().display().to_string(),
         })?;

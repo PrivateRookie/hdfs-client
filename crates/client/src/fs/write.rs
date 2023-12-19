@@ -12,18 +12,17 @@ use prost::{
 
 use crate::{
     fs::{get_data_node_addr, CLIENT_NAME},
-    protocol::{
-        common::{RequestHeaderProto, RpcRequestHeaderProto},
-        hdfs::{
-            op_write_block_proto::BlockConstructionStage, AddBlockRequestProto,
-            AddBlockResponseProto, BaseHeaderProto, BlockOpResponseProto, ChecksumProto,
-            ChecksumTypeProto, ClientOperationHeaderProto, CompleteRequestProto,
-            CreateRequestProto, ExtendedBlockProto, FsPermissionProto, HdfsFileStatusProto,
-            LocatedBlockProto, OpWriteBlockProto, PacketHeaderProto, PipelineAckProto, Status,
-            UpdateBlockForPipelineRequestProto,
-        },
-    },
     IpcConnection, DATA_TRANSFER_PROTO, WRITE_BLOCK,
+};
+use hdfs_types::{
+    common::{RequestHeaderProto, RpcRequestHeaderProto},
+    hdfs::{
+        op_write_block_proto::BlockConstructionStage, AddBlockRequestProto, AddBlockResponseProto,
+        BaseHeaderProto, BlockOpResponseProto, ChecksumProto, ChecksumTypeProto,
+        ClientOperationHeaderProto, CompleteRequestProto, CreateRequestProto, ExtendedBlockProto,
+        FsPermissionProto, HdfsFileStatusProto, LocatedBlockProto, OpWriteBlockProto,
+        PacketHeaderProto, PipelineAckProto, Status, UpdateBlockForPipelineRequestProto,
+    },
 };
 
 pub struct BlockWriter {
@@ -212,8 +211,8 @@ impl InnerWriter {
 }
 
 impl BlockWriter {
-    pub fn new(
-        ipc: &mut IpcConnection,
+    pub fn new<S: Read + Write>(
+        ipc: &mut IpcConnection<S>,
         src: String,
         fs: &HdfsFileStatusProto,
         previous: Option<ExtendedBlockProto>,
@@ -241,7 +240,10 @@ impl BlockWriter {
         self.get_inner_writer().map(|i| i.offset)
     }
 
-    pub fn finalize(mut self, ipc: &mut IpcConnection) -> io::Result<ExtendedBlockProto> {
+    pub fn finalize<S: Read + Write>(
+        mut self,
+        ipc: &mut IpcConnection<S>,
+    ) -> io::Result<ExtendedBlockProto> {
         let inner = self.get_inner_writer()?;
         inner.write(&[], true)?;
         self.flush()?;
@@ -299,17 +301,17 @@ impl Write for BlockWriter {
     }
 }
 
-pub struct FileWriter {
+pub struct FileWriter<S: Read + Write> {
     total_size: u64,
     block_size: u64,
     fs: HdfsFileStatusProto,
-    ipc: IpcConnection,
+    ipc: IpcConnection<S>,
     path: String,
     active_blk: Option<BlockWriter>,
 }
 
-impl FileWriter {
-    pub fn create(mut ipc: IpcConnection, path: impl AsRef<Path>) -> io::Result<Self> {
+impl<S: Read + Write> FileWriter<S> {
+    pub fn create(mut ipc: IpcConnection<S>, path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_string_lossy().to_string();
         let req = CreateRequestProto {
             src: path.clone(),
@@ -335,7 +337,7 @@ impl FileWriter {
     }
 }
 
-impl Write for FileWriter {
+impl<S: Read + Write> Write for FileWriter<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.active_blk.is_none() {
             let blk = BlockWriter::new(
@@ -388,14 +390,14 @@ impl Write for FileWriter {
     }
 }
 
-impl Drop for FileWriter {
+impl<S: Read + Write> Drop for FileWriter<S> {
     fn drop(&mut self) {
         let b = self
             .active_blk
             .take()
             .and_then(|blk| blk.finalize(&mut self.ipc).ok());
         tracing::info!("{b:?}");
-        let req = crate::protocol::hdfs::CompleteRequestProto {
+        let req = hdfs_types::hdfs::CompleteRequestProto {
             src: self.path.clone(),
             client_name: CLIENT_NAME.into(),
             last: b,

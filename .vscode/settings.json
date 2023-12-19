@@ -1,5 +1,8 @@
 {
     "rust-analyzer.cargo.features": [
         "trace"
+    ],
+    "cSpell.words": [
+        "hdfs"
     ]
 }

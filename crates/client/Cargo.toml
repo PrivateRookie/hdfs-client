@@ -6,7 +6,7 @@ edition = "2021"
 
 [features]
 default = []
-trace = []
+trace = ["hdfs-types/serde", "hdfs-types/valuable"]
 sync = []
 async = []
 
@@ -25,10 +25,7 @@ time = { version = "0.3.19", features = ["formatting", "parsing", "macros"] }
 file-mode = "0.1.2"
 regex = "1.8.1"
 crc = "3.0.1"
+hdfs-types = { path = "../types" }
 
 [dev-dependencies]
 tracing-subscriber = { version = "*" }
-
-
-[build-dependencies]
-tonic-build = "0.10.2"

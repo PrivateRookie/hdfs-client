@@ -1,14 +1,14 @@
 use prost::Message;
 
-use crate::protocol::common::*;
-use crate::protocol::hdfs::*;
+use hdfs_types::common::*;
+use hdfs_types::hdfs::*;
 
 use crate::IpcConnection;
 use crate::IpcError;
 
 use super::method;
 
-method! { IpcConnection =>
+method! { IpcConnection<S> =>
     create, "create", CreateRequestProto, CreateResponseProto;
     get_server_defaults, "getServerDefaults", GetServerDefaultsRequestProto,GetServerDefaultsResponseProto;
     get_block_locations, "getBlockLocations", GetBlockLocationsRequestProto, GetBlockLocationsResponseProto;

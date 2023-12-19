@@ -4,31 +4,21 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 
+use hdfs_types::common::UserInformationProto;
+use hdfs_types::common::{
+    rpc_response_header_proto::RpcStatusProto, IpcConnectionContextProto, RpcKindProto,
+    RpcResponseHeaderProto,
+};
 use prost::{
     bytes::{BufMut, BytesMut},
     encoding::decode_varint,
     DecodeError, EncodeError, Message,
 };
-use protocol::common::{
-    rpc_response_header_proto::RpcStatusProto, IpcConnectionContextProto, RpcKindProto,
-    RpcResponseHeaderProto,
-};
 
-use crate::protocol::common::{
+use hdfs_types::common::{
     rpc_request_header_proto::OperationProto, RequestHeaderProto, RpcCallerContextProto,
     RpcRequestHeaderProto,
 };
-
-/// HDFS 协议消息体
-pub mod protocol {
-    pub mod common {
-        tonic::include_proto!("hadoop.common");
-    }
-
-    pub mod hdfs {
-        tonic::include_proto!("hadoop.hdfs");
-    }
-}
 
 mod client_data_node_impl;
 mod client_name_node_impl;
@@ -95,13 +85,11 @@ impl From<DecodeError> for IpcError {
     }
 }
 
-impl RpcResponseHeaderProto {
-    pub fn into_err(self) -> Result<Self, IpcError> {
-        if self.status() != RpcStatusProto::Success {
-            Err(IpcError::ServerError(Box::new(self)))
-        } else {
-            Ok(self)
-        }
+fn into_err(error: RpcResponseHeaderProto) -> Result<RpcResponseHeaderProto, IpcError> {
+    if error.status() != RpcStatusProto::Success {
+        Err(IpcError::ServerError(Box::new(error)))
+    } else {
+        Ok(error)
     }
 }
 
@@ -120,21 +108,20 @@ impl From<IpcError> for io::Error {
 }
 
 /// hdfs client protocol 实现
-pub struct IpcConnection {
-    stream: TcpStream,
+pub struct IpcConnection<S> {
+    stream: S,
     call_id: i32,
     client_id: Vec<u8>,
     context: Option<RpcCallerContextProto>,
 }
 
-impl IpcConnection {
+impl<S: Write + Read> IpcConnection<S> {
     pub fn connect(
-        addr: impl ToSocketAddrs,
+        mut stream: S,
         user: &str,
         context: impl Into<Option<RpcCallerContextProto>>,
         handshake: impl Into<Option<Handshake>>,
     ) -> Result<Self, IpcError> {
-        let mut stream = TcpStream::connect(addr)?;
         let client_id = uuid::Uuid::new_v4().to_bytes_le().to_vec();
         let context = context.into();
         let mut buf = BytesMut::new();
@@ -153,18 +140,19 @@ impl IpcConnection {
         };
         let ipc_req = IpcConnectionContextProto {
             protocol: Some(PROTOCOL.into()),
-            user_info: Some(protocol::common::UserInformationProto {
+            user_info: Some(UserInformationProto {
                 effective_user: Some(user.into()),
                 real_user: None,
             }),
         };
-        let req_header_bytes = req_header.encode_length_delimited_to_vec();
-        let ipc_bytes = ipc_req.encode_length_delimited_to_vec();
-        let length = req_header_bytes.len() + ipc_bytes.len();
-        buf.put_u32(length as u32);
-        buf.extend_from_slice(&req_header_bytes);
-        buf.extend_from_slice(&ipc_bytes);
+        let ori = buf.len();
+        buf.put_u32(0);
+        req_header.encode_length_delimited(&mut buf).unwrap();
+        ipc_req.encode_length_delimited(&mut buf).unwrap();
+        let length = buf.len() - ori - 4;
+        buf[ori..(ori + 4)].copy_from_slice(&(length as u32).to_be_bytes());
         stream.write_all(&buf)?;
+        stream.flush()?;
         Ok(Self {
             stream,
             call_id: Default::default(),
@@ -219,7 +207,7 @@ impl IpcConnection {
         let header_bytes = buf.split_to(header_length as usize);
         let resp_header = RpcResponseHeaderProto::decode(header_bytes)?;
         // into error if status is not success
-        let resp_header = resp_header.into_err()?;
+        let resp_header = into_err(resp_header)?;
         Ok((resp_header, buf))
     }
 }
@@ -244,7 +232,7 @@ macro_rules! method {
     };
 
     ($ipc:ty => $($name:ident, $raw:literal, $req:ty, $resp:ty);+;) => {
-        impl $ipc {
+        impl <S: std::io::Write + std::io::Read> $ipc {
             $(method!($name, $raw, $req, $resp);)+
         }
     }

@@ -223,3 +223,29 @@ impl IpcConnection {
         Ok((resp_header, buf))
     }
 }
+
+#[macro_export]
+macro_rules! method {
+    ($name:ident, $raw:literal, $req:ty, $resp:ty) => {
+        pub fn $name(&mut self, req: $req) -> Result<(RpcResponseHeaderProto, $resp), IpcError> {
+            #[cfg(feature = "trace")]
+            {
+                tracing::trace!("invoke method: {}, req: {:?}", $raw, req);
+            }
+            let req = req.encode_length_delimited_to_vec();
+            let (header, resp) = self.send_raw_req($raw, &req)?;
+            let resp = <$resp>::decode_length_delimited(resp)?;
+            #[cfg(feature = "trace")]
+            {
+                tracing::trace!("response method: {}, header: {:?}, resp: {:?}", $raw, header, resp);
+            }
+            Ok((header, resp))
+        }
+    };
+
+    ($ipc:ty => $($name:ident, $raw:literal, $req:ty, $resp:ty);+;) => {
+        impl $ipc {
+            $(method!($name, $raw, $req, $resp);)+
+        }
+    }
+}

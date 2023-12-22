@@ -170,12 +170,12 @@ impl Read for BlockReader {
 
 /// HDFS 文件 reader
 #[allow(dead_code)]
-pub struct FileReader {
+pub struct OldFileReader {
     blocks: Vec<LocatedBlockProto>,
     active_blk: Option<BlockReader>,
 }
 
-impl FileReader {
+impl OldFileReader {
     pub fn new<S: Read + Write>(
         ipc: &mut IpcConnection<S>,
         path: impl AsRef<Path>,
@@ -215,7 +215,7 @@ impl FileReader {
     }
 }
 
-impl Read for FileReader {
+impl Read for OldFileReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             if let Some(reader) = self.active_blk.as_mut() {

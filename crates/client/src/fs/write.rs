@@ -301,7 +301,7 @@ impl Write for BlockWriter {
     }
 }
 
-pub struct FileWriter<S: Read + Write> {
+pub struct OldFileWriter<S: Read + Write> {
     total_size: u64,
     block_size: u64,
     fs: HdfsFileStatusProto,
@@ -310,7 +310,7 @@ pub struct FileWriter<S: Read + Write> {
     active_blk: Option<BlockWriter>,
 }
 
-impl<S: Read + Write> FileWriter<S> {
+impl<S: Read + Write> OldFileWriter<S> {
     pub fn create(mut ipc: IpcConnection<S>, path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_string_lossy().to_string();
         let req = CreateRequestProto {
@@ -337,7 +337,7 @@ impl<S: Read + Write> FileWriter<S> {
     }
 }
 
-impl<S: Read + Write> Write for FileWriter<S> {
+impl<S: Read + Write> Write for OldFileWriter<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.active_blk.is_none() {
             let blk = BlockWriter::new(
@@ -390,7 +390,7 @@ impl<S: Read + Write> Write for FileWriter<S> {
     }
 }
 
-impl<S: Read + Write> Drop for FileWriter<S> {
+impl<S: Read + Write> Drop for OldFileWriter<S> {
     fn drop(&mut self) {
         let b = self
             .active_blk

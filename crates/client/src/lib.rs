@@ -1,14 +1,13 @@
 use std::io;
 use std::io::Read;
 use std::io::Write;
-use std::net::TcpStream;
-use std::net::ToSocketAddrs;
 
 use hdfs_types::common::UserInformationProto;
 use hdfs_types::common::{
     rpc_response_header_proto::RpcStatusProto, IpcConnectionContextProto, RpcKindProto,
     RpcResponseHeaderProto,
 };
+use hdfs_types::hdfs::BlockOpResponseProto;
 use prost::{
     bytes::{BufMut, BytesMut},
     encoding::decode_varint,
@@ -56,52 +55,66 @@ impl Handshake {
 
 /// name node 通信错误
 #[derive(Debug, thiserror::Error)]
-pub enum IpcError {
+pub enum HrpcError {
     #[error("{0}")]
     IOError(io::Error),
     #[error("{0}")]
     EncodeError(EncodeError),
     #[error("{0}")]
     DecodeError(DecodeError),
+    #[error("")]
+    ChecksumError,
+    #[error("{0:?}")]
+    BlockError(Box<BlockOpResponseProto>),
     #[error("{0:?}")]
     ServerError(Box<RpcResponseHeaderProto>),
+    #[error("{0:?}")]
+    Custom(String),
 }
 
-impl From<io::Error> for IpcError {
+impl From<io::Error> for HrpcError {
     fn from(value: io::Error) -> Self {
         Self::IOError(value)
     }
 }
 
-impl From<EncodeError> for IpcError {
+impl From<EncodeError> for HrpcError {
     fn from(value: EncodeError) -> Self {
         Self::EncodeError(value)
     }
 }
 
-impl From<DecodeError> for IpcError {
+impl From<DecodeError> for HrpcError {
     fn from(value: DecodeError) -> Self {
         Self::DecodeError(value)
     }
 }
 
-fn into_err(error: RpcResponseHeaderProto) -> Result<RpcResponseHeaderProto, IpcError> {
+fn into_err(error: RpcResponseHeaderProto) -> Result<RpcResponseHeaderProto, HrpcError> {
     if error.status() != RpcStatusProto::Success {
-        Err(IpcError::ServerError(Box::new(error)))
+        Err(HrpcError::ServerError(Box::new(error)))
     } else {
         Ok(error)
     }
 }
 
-impl From<IpcError> for io::Error {
-    fn from(value: IpcError) -> Self {
+impl From<HrpcError> for io::Error {
+    fn from(value: HrpcError) -> Self {
         match value {
-            IpcError::IOError(e) => e,
-            IpcError::EncodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
-            IpcError::DecodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
-            IpcError::ServerError(e) => io::Error::new(
+            HrpcError::IOError(e) => e,
+            HrpcError::EncodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
+            HrpcError::DecodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
+            HrpcError::ChecksumError => {
+                io::Error::new(io::ErrorKind::InvalidData, "mismatch checksum")
+            }
+            HrpcError::Custom(e) => io::Error::new(io::ErrorKind::InvalidData, e),
+            HrpcError::ServerError(e) => io::Error::new(
                 io::ErrorKind::Other,
                 format!("name node error response {e:?}"),
+            ),
+            HrpcError::BlockError(e) => io::Error::new(
+                io::ErrorKind::Other,
+                format!("block operation response {e:?}"),
             ),
         }
     }
@@ -121,7 +134,7 @@ impl<S: Write + Read> IpcConnection<S> {
         user: &str,
         context: impl Into<Option<RpcCallerContextProto>>,
         handshake: impl Into<Option<Handshake>>,
-    ) -> Result<Self, IpcError> {
+    ) -> Result<Self, HrpcError> {
         let client_id = uuid::Uuid::new_v4().to_bytes_le().to_vec();
         let context = context.into();
         let mut buf = BytesMut::new();
@@ -165,7 +178,7 @@ impl<S: Write + Read> IpcConnection<S> {
         &mut self,
         method_name: &str,
         req: &[u8],
-    ) -> Result<(RpcResponseHeaderProto, BytesMut), IpcError> {
+    ) -> Result<(RpcResponseHeaderProto, BytesMut), HrpcError> {
         let call_id = self.call_id;
         let rpc_req_header = RpcRequestHeaderProto {
             rpc_kind: Some(RpcKindProto::RpcProtocolBuffer as i32),
@@ -193,10 +206,11 @@ impl<S: Write + Read> IpcConnection<S> {
         buf.extend_from_slice(&header_bytes);
         buf.extend_from_slice(req);
         self.stream.write_all(&buf)?;
+        self.stream.flush()?;
         self.read_resp()
     }
 
-    fn read_resp(&mut self) -> Result<(RpcResponseHeaderProto, BytesMut), IpcError> {
+    fn read_resp(&mut self) -> Result<(RpcResponseHeaderProto, BytesMut), HrpcError> {
         let mut raw_length = [0u8; 4];
         self.stream.read_exact(&mut raw_length)?;
         let length = u32::from_be_bytes(raw_length) as usize;
@@ -215,17 +229,17 @@ impl<S: Write + Read> IpcConnection<S> {
 #[macro_export]
 macro_rules! method {
     ($name:ident, $raw:literal, $req:ty, $resp:ty) => {
-        pub fn $name(&mut self, req: $req) -> Result<(RpcResponseHeaderProto, $resp), IpcError> {
+        pub fn $name(&mut self, req: $req) -> Result<(RpcResponseHeaderProto, $resp), HrpcError> {
             #[cfg(feature = "trace")]
             {
-                tracing::trace!("invoke method: {}, req: {:?}", $raw, req);
+                tracing::trace!(target: "hrpc", "invoke method: {}, req: {:#?}", $raw, req);
             }
             let req = req.encode_length_delimited_to_vec();
             let (header, resp) = self.send_raw_req($raw, &req)?;
             let resp = <$resp>::decode_length_delimited(resp)?;
             #[cfg(feature = "trace")]
             {
-                tracing::trace!("response method: {}, header: {:?}, resp: {:?}", $raw, header, resp);
+                tracing::trace!(target: "hrpc", "response method: {}, header: {:#?}, resp: {:#?}", $raw, header, resp);
             }
             Ok((header, resp))
         }

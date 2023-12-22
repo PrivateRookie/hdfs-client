@@ -1,21 +1,33 @@
-use std::io::Read;
+use std::{io::Read, net::TcpStream};
 
-use hdfs_client::FileReader;
+use hdfs_client::{BufStream, IpcConnection, ReaderOptions, FS};
 
 fn main() {
-    let file = std::env::args().skip(1).next().unwrap();
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::TRACE)
         .pretty()
         .init();
-    let conf = hdfs_client::FSConfig {
-        name_node: "namenode".into(),
-        port: 9000,
-        user: "root".into(),
-    };
-    let mut ipc = conf.connect(None).unwrap();
-    let mut fd = FileReader::new(&mut ipc, file).unwrap();
-    let mut s = String::new();
-    fd.read_to_string(&mut s).unwrap();
-    println!("{s}");
+    let mut fs = FS::new(
+        move || {
+            let stream = TcpStream::connect("127.0.0.1:9000")?;
+            let stream = BufStream::new(stream);
+            let ipc = IpcConnection::connect(stream, "root", None, None)?;
+            Ok(ipc)
+        },
+        move |node| {
+            let stream = TcpStream::connect(("127.0.0.1", node.xfer_port as u16))?;
+            let stream = BufStream::new(stream);
+            Ok(stream)
+        },
+    )
+    .unwrap();
+    let mut fd = ReaderOptions {
+        checksum: Some(true),
+        ..Default::default()
+    }
+    .open("/test/hello.txt", &mut fs)
+    .unwrap();
+    let mut content = String::new();
+    fd.read_to_string(&mut content).unwrap();
+    println!("{content}");
 }

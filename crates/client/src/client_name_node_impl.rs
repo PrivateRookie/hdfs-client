@@ -4,7 +4,7 @@ use hdfs_types::common::*;
 use hdfs_types::hdfs::*;
 
 use crate::IpcConnection;
-use crate::IpcError;
+use crate::HrpcError;
 
 use super::method;
 

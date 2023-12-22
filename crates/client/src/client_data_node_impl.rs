@@ -5,7 +5,7 @@ use hdfs_types::hdfs::*;
 
 use super::method;
 use crate::IpcConnection;
-use crate::IpcError;
+use crate::HrpcError;
 
 super::method! { IpcConnection<S> =>
     get_replica_visible_length, "getReplicaVisibleLength", GetReplicaVisibleLengthRequestProto, GetReplicaVisibleLengthResponseProto;

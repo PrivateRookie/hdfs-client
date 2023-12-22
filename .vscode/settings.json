@@ -3,6 +3,8 @@
         "trace"
     ],
     "cSpell.words": [
-        "hdfs"
+        "Datanode",
+        "hdfs",
+        "Hrpc"
     ]
 }

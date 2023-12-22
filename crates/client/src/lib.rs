@@ -23,6 +23,7 @@ mod client_data_node_impl;
 mod client_name_node_impl;
 mod fs;
 pub use fs::*;
+pub use hdfs_types as types;
 
 pub const PROTOCOL: &str = "org.apache.hadoop.hdfs.protocol.ClientProtocol";
 

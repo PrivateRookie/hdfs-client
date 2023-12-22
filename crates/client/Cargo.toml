@@ -31,3 +31,6 @@ valuable = { version = "*", optional = true }
 [dev-dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 tracing-subscriber = { version = "0.3.18" }
+
+[lints.clippy]
+type_complexity = "allow"

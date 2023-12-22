@@ -99,8 +99,7 @@ impl<S: Read + Write> BlockReadStream<S> {
             ChecksumTypeProto::ChecksumNull => vec![],
             _ => {
                 let len = (header.data_len as u32 / checksum.bytes_per_checksum) * 4 + 4;
-                let mut data = vec![];
-                data.resize(len as usize, 0);
+                let mut data = vec![0; len as usize];
                 stream.read_exact(&mut data)?;
                 data.as_slice()
                     .chunks_exact(4)
@@ -274,7 +273,7 @@ impl<S: Read + Write> BlockWriteStream<S> {
             }
         }
         self.stream.write_all(&buffer)?;
-        self.stream.write_all(&data)?;
+        self.stream.write_all(data)?;
         self.stream.flush()?;
 
         let ack: PipelineAckProto = read_prefixed_message(&mut self.stream)?;

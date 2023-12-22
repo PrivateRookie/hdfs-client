@@ -26,5 +26,5 @@ fn main() {
         .checksum(None)
         .create("/test/hello.txt", &mut fs)
         .unwrap();
-    fd.write_all(format!("Hello World\n",).as_bytes()).unwrap();
+    fd.write_all("Hello World\n".to_string().as_bytes()).unwrap();
 }

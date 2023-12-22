@@ -122,14 +122,14 @@ impl WriterOptions {
         let req = CreateRequestProto {
             src: path.clone(),
             masked: FsPermissionProto {
-                perm: self.perm.unwrap_or(0644),
+                perm: self.perm.unwrap_or(0o644),
             },
             unmasked: self.unmask.map(|u| FsPermissionProto { perm: u }),
             client_name: fs.client_name.clone(),
             create_flag: 1,
             create_parent: false,
-            replication: self.replica.unwrap_or_else(|| default.replication),
-            block_size: self.block_size.unwrap_or_else(|| default.block_size),
+            replication: self.replica.unwrap_or(default.replication),
+            block_size: self.block_size.unwrap_or(default.block_size),
             ..Default::default()
         };
         let (_, resp) = fs.ipc.create(req)?;
@@ -149,7 +149,7 @@ impl WriterOptions {
 
         Ok(FileWriter {
             written: 0,
-            block_size: self.block_size.unwrap_or_else(|| default.block_size),
+            block_size: self.block_size.unwrap_or(default.block_size),
             ipc: (fs.create_ipc)()?,
             connect_data_node: fs.connect_data_node.clone(),
             client_name: fs.client_name.clone(),
@@ -207,7 +207,7 @@ fn create_blk<S: Read + Write, D: Read + Write>(
 
 impl<S: Read + Write, D: Read + Write> Drop for FileWriter<S, D> {
     fn drop(&mut self) {
-        self.blk_stream.close(&mut self.ipc).ok().map(|b| {
+        if let Ok(b) = self.blk_stream.close(&mut self.ipc) {
             let req = CompleteRequestProto {
                 src: self.path.clone(),
                 client_name: self.client_name.clone(),
@@ -215,6 +215,6 @@ impl<S: Read + Write, D: Read + Write> Drop for FileWriter<S, D> {
                 file_id: self.fs.file_id,
             };
             self.ipc.complete(req).ok();
-        });
+        }
     }
 }

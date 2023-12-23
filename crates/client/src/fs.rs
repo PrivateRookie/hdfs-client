@@ -4,50 +4,11 @@ use std::{
     sync::Arc,
 };
 
-use prost::{DecodeError, EncodeError};
+use crate::{hrpc::HRpc, HDFSError};
+use hdfs_types::{common::RpcCallerContextProto, hdfs::DatanodeIdProto};
 
-use crate::{hrpc::HRpc, HrpcError};
-use hdfs_types::{
-    common::RpcCallerContextProto,
-    hdfs::{BlockOpResponseProto, DatanodeIdProto},
-};
 
-pub(crate) const DATA_TRANSFER_PROTO: u16 = 28;
-pub(crate) const READ_BLOCK: u8 = 81;
-pub(crate) const WRITE_BLOCK: u8 = 80;
 const CLIENT_NAME: &str = "hdfs-rust-client";
-
-#[derive(Debug, thiserror::Error)]
-pub enum BlockError {
-    #[error("{0}")]
-    IOError(io::Error),
-    #[error("{0}")]
-    EncodeError(EncodeError),
-    #[error("{0}")]
-    DecodeError(DecodeError),
-    #[error("{0:?}")]
-    ServerError(Box<BlockOpResponseProto>),
-    #[error("no available block")]
-    NoAvailableBlock,
-}
-
-impl From<io::Error> for BlockError {
-    fn from(value: io::Error) -> Self {
-        Self::IOError(value)
-    }
-}
-
-impl From<EncodeError> for BlockError {
-    fn from(value: EncodeError) -> Self {
-        Self::EncodeError(value)
-    }
-}
-
-impl From<DecodeError> for BlockError {
-    fn from(value: DecodeError) -> Self {
-        Self::DecodeError(value)
-    }
-}
 
 mod writer;
 pub use writer::{FileWriter, WriterOptions};
@@ -119,7 +80,7 @@ impl FSConfig {
         &self,
         mut connect_fn: impl FnMut() -> io::Result<S>,
         ctx: impl Into<Option<RpcCallerContextProto>>,
-    ) -> Result<HRpc<S>, HrpcError> {
+    ) -> Result<HRpc<S>, HDFSError> {
         let stream = connect_fn()?;
         HRpc::connect(
             stream,

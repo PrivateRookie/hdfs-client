@@ -10,7 +10,7 @@ use hdfs_types::hdfs::{
     GetServerDefaultsRequestProto, HdfsFileStatusProto,
 };
 
-use crate::{hrpc::HRpc, HrpcError, FS};
+use crate::{hrpc::HRpc, HDFSError, FS};
 
 use crate::data_transfer::BlockWriteStream;
 
@@ -109,7 +109,7 @@ impl WriterOptions {
         self,
         path: impl AsRef<Path>,
         fs: &mut FS<S, D>,
-    ) -> Result<FileWriter<S, D>, HrpcError> {
+    ) -> Result<FileWriter<S, D>, HDFSError> {
         let (_, default) = fs
             .ipc
             .get_server_defaults(GetServerDefaultsRequestProto {})?;
@@ -129,9 +129,7 @@ impl WriterOptions {
             ..Default::default()
         };
         let (_, resp) = fs.ipc.create(req)?;
-        let fs_status = resp
-            .fs
-            .ok_or_else(|| HrpcError::Custom("namenode return empty fs".into()))?;
+        let fs_status = resp.fs.ok_or_else(|| HDFSError::EmptyFS)?;
 
         let active_blk = create_blk(
             &mut fs.ipc,
@@ -165,7 +163,7 @@ fn create_blk<S: Read + Write, D: Read + Write>(
     conn_fn: Arc<dyn Fn(&DatanodeIdProto) -> Result<D, io::Error>>,
     default: &FsServerDefaultsProto,
     previous: Option<ExtendedBlockProto>,
-) -> Result<BlockWriteStream<D>, HrpcError> {
+) -> Result<BlockWriteStream<D>, HDFSError> {
     let req = AddBlockRequestProto {
         src: path.clone(),
         client_name: client_name.clone(),
@@ -190,7 +188,7 @@ fn create_blk<S: Read + Write, D: Read + Write>(
                 None
             }
         });
-    let stream = stream.ok_or_else(|| HrpcError::Custom("no usable location".into()))?;
+    let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
     let blk_stream = BlockWriteStream::create(
         client_name.clone(),
         stream,

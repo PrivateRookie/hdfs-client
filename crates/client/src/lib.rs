@@ -11,11 +11,10 @@ mod crc32;
 pub mod data_transfer;
 pub mod hrpc;
 
-const PROTOCOL: &str = "org.apache.hadoop.hdfs.protocol.ClientProtocol";
 
 /// name node 通信错误
 #[derive(Debug, thiserror::Error)]
-pub enum HrpcError {
+pub enum HDFSError {
     #[error("{0}")]
     IOError(io::Error),
     #[error("{0}")]
@@ -24,47 +23,59 @@ pub enum HrpcError {
     DecodeError(DecodeError),
     #[error("")]
     ChecksumError,
+    #[error("")]
+    NoAvailableBlock,
+    #[error("")]
+    NoAvailableLocation,
+    #[error("")]
+    EmptyFS,
     #[error("{0:?}")]
-    BlockError(Box<BlockOpResponseProto>),
+    DataNodeError(Box<BlockOpResponseProto>),
     #[error("{0:?}")]
-    ServerError(Box<RpcResponseHeaderProto>),
-    #[error("{0:?}")]
-    Custom(String),
+    NameNodeError(Box<RpcResponseHeaderProto>),
 }
 
-impl From<io::Error> for HrpcError {
+impl From<io::Error> for HDFSError {
     fn from(value: io::Error) -> Self {
         Self::IOError(value)
     }
 }
 
-impl From<EncodeError> for HrpcError {
+impl From<EncodeError> for HDFSError {
     fn from(value: EncodeError) -> Self {
         Self::EncodeError(value)
     }
 }
 
-impl From<DecodeError> for HrpcError {
+impl From<DecodeError> for HDFSError {
     fn from(value: DecodeError) -> Self {
         Self::DecodeError(value)
     }
 }
 
-impl From<HrpcError> for io::Error {
-    fn from(value: HrpcError) -> Self {
+impl From<HDFSError> for io::Error {
+    fn from(value: HDFSError) -> Self {
         match value {
-            HrpcError::IOError(e) => e,
-            HrpcError::EncodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
-            HrpcError::DecodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
-            HrpcError::ChecksumError => {
+            HDFSError::IOError(e) => e,
+            HDFSError::EncodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
+            HDFSError::DecodeError(e) => io::Error::new(io::ErrorKind::InvalidData, e),
+            HDFSError::ChecksumError => {
                 io::Error::new(io::ErrorKind::InvalidData, "mismatch checksum")
             }
-            HrpcError::Custom(e) => io::Error::new(io::ErrorKind::InvalidData, e),
-            HrpcError::ServerError(e) => io::Error::new(
+            HDFSError::EmptyFS => {
+                io::Error::new(io::ErrorKind::InvalidData, "namenode return empty fs")
+            }
+            HDFSError::NoAvailableBlock => {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "no available block")
+            }
+            HDFSError::NoAvailableLocation => {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "no available location")
+            }
+            HDFSError::NameNodeError(e) => io::Error::new(
                 io::ErrorKind::Other,
                 format!("name node error response {e:?}"),
             ),
-            HrpcError::BlockError(e) => io::Error::new(
+            HDFSError::DataNodeError(e) => io::Error::new(
                 io::ErrorKind::Other,
                 format!("block operation response {e:?}"),
             ),

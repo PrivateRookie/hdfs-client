@@ -7,11 +7,13 @@ use prost::{
     EncodeError, Message,
 };
 
-use crate::{HrpcError, PROTOCOL};
+use crate::HDFSError;
 
-fn into_err(error: RpcResponseHeaderProto) -> Result<RpcResponseHeaderProto, HrpcError> {
+const PROTOCOL: &str = "org.apache.hadoop.hdfs.protocol.ClientProtocol";
+
+fn into_err(error: RpcResponseHeaderProto) -> Result<RpcResponseHeaderProto, HDFSError> {
     if error.status() != rpc_response_header_proto::RpcStatusProto::Success {
-        Err(HrpcError::ServerError(Box::new(error)))
+        Err(HDFSError::NameNodeError(Box::new(error)))
     } else {
         Ok(error)
     }
@@ -58,7 +60,7 @@ impl<S: Write + Read> HRpc<S> {
         user: &str,
         context: impl Into<Option<RpcCallerContextProto>>,
         handshake: impl Into<Option<Handshake>>,
-    ) -> Result<Self, HrpcError> {
+    ) -> Result<Self, HDFSError> {
         let client_id = uuid::Uuid::new_v4().to_bytes_le().to_vec();
         let context = context.into();
         let mut buf = BytesMut::new();
@@ -102,7 +104,7 @@ impl<S: Write + Read> HRpc<S> {
         &mut self,
         method_name: &str,
         req: &[u8],
-    ) -> Result<(RpcResponseHeaderProto, BytesMut), HrpcError> {
+    ) -> Result<(RpcResponseHeaderProto, BytesMut), HDFSError> {
         let call_id = self.call_id;
         let rpc_req_header = RpcRequestHeaderProto {
             rpc_kind: Some(RpcKindProto::RpcProtocolBuffer as i32),
@@ -134,7 +136,7 @@ impl<S: Write + Read> HRpc<S> {
         self.read_resp()
     }
 
-    pub(crate) fn read_resp(&mut self) -> Result<(RpcResponseHeaderProto, BytesMut), HrpcError> {
+    pub(crate) fn read_resp(&mut self) -> Result<(RpcResponseHeaderProto, BytesMut), HDFSError> {
         let mut raw_length = [0u8; 4];
         self.stream.read_exact(&mut raw_length)?;
         let length = u32::from_be_bytes(raw_length) as usize;
@@ -152,7 +154,7 @@ impl<S: Write + Read> HRpc<S> {
 
 macro_rules! method {
     ($name:ident, $raw:literal, $req:ty, $resp:ty) => {
-        pub fn $name(&mut self, req: $req) -> Result<(RpcResponseHeaderProto, $resp), HrpcError> {
+        pub fn $name(&mut self, req: $req) -> Result<(RpcResponseHeaderProto, $resp), HDFSError> {
             #[cfg(feature = "trace_dbg")]
             {
                 tracing::trace!(target: "hrpc", "\nmethod: {}\nreq: {:#?}", $raw, req);

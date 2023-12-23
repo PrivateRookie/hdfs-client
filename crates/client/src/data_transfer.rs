@@ -1,5 +1,6 @@
 use std::io::{self, Read, Write};
 
+use crate::{crc32, hrpc::HRpc, HDFSError};
 use crc::Digest;
 use hdfs_types::hdfs::{
     op_write_block_proto::BlockConstructionStage, BaseHeaderProto, BlockOpResponseProto,
@@ -12,9 +13,11 @@ use prost::{
     Message,
 };
 
-use crate::{crc32, hrpc::HRpc, HrpcError, DATA_TRANSFER_PROTO, READ_BLOCK, WRITE_BLOCK};
+const DATA_TRANSFER_PROTO: u16 = 28;
+const READ_BLOCK: u8 = 81;
+const WRITE_BLOCK: u8 = 80;
 
-fn read_prefixed_message<S: Read, M: Message + Default>(stream: &mut S) -> Result<M, HrpcError> {
+fn read_prefixed_message<S: Read, M: Message + Default>(stream: &mut S) -> Result<M, HDFSError> {
     use prost::encoding::decode_varint;
     let mut buf = BytesMut::new();
     let mut tmp_buf = [0u8];
@@ -85,7 +88,7 @@ impl<S: Read + Write> BlockReadStream<S> {
         offset: u64,
         send_checksums: Option<bool>,
         block: LocatedBlockProto,
-    ) -> Result<Self, HrpcError> {
+    ) -> Result<Self, HDFSError> {
         let req = OpReadBlockProto {
             header: ClientOperationHeaderProto {
                 base_header: BaseHeaderProto {
@@ -128,7 +131,7 @@ impl<S: Read + Write> BlockReadStream<S> {
                 "init data transfer error {}",
                 resp.message.clone().unwrap_or_default()
             );
-            return Err(HrpcError::BlockError(Box::new(resp)));
+            return Err(HDFSError::DataNodeError(Box::new(resp)));
         }
 
         let _length = read_be_u32(&mut stream)?;
@@ -263,7 +266,7 @@ impl<S: Read + Write> BlockWriteStream<S> {
     pub fn close<D: Read + Write>(
         &mut self,
         ipc: &mut HRpc<D>,
-    ) -> Result<ExtendedBlockProto, HrpcError> {
+    ) -> Result<ExtendedBlockProto, HDFSError> {
         self.write(&[], true)?;
         self.stream.flush()?;
         self.block.b.num_bytes = Some(self.offset);
@@ -281,7 +284,7 @@ impl<S: Read + Write> BlockWriteStream<S> {
         block: LocatedBlockProto,
         bytes_per_checksum: u32,
         checksum_ty: ChecksumTypeProto,
-    ) -> Result<Self, HrpcError> {
+    ) -> Result<Self, HDFSError> {
         let req = OpWriteBlockProto {
             header: ClientOperationHeaderProto {
                 base_header: BaseHeaderProto {
@@ -344,7 +347,7 @@ impl<S: Read + Write> BlockWriteStream<S> {
         })
     }
 
-    pub fn write(&mut self, data: &[u8], last: bool) -> Result<(), HrpcError> {
+    pub fn write(&mut self, data: &[u8], last: bool) -> Result<(), HDFSError> {
         let header = PacketHeaderProto {
             offset_in_block: self.offset as i64,
             seqno: self.seq_no,

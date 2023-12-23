@@ -10,7 +10,7 @@ use hdfs_types::hdfs::{
     GetFileInfoRequestProto, LocatedBlocksProto,
 };
 
-use crate::{data_transfer::BlockReadStream, HrpcError, FS};
+use crate::{data_transfer::BlockReadStream, HDFSError, FS};
 
 #[derive(Default)]
 pub struct ReaderOptions {
@@ -22,7 +22,7 @@ impl ReaderOptions {
         self,
         path: impl AsRef<Path>,
         fs: &mut FS<S, D>,
-    ) -> Result<FileReader<D>, HrpcError> {
+    ) -> Result<FileReader<D>, HDFSError> {
         let src = path.as_ref().to_string_lossy().to_string();
         let (_, info) = fs
             .ipc
@@ -57,7 +57,7 @@ impl ReaderOptions {
         };
 
         if locations.blocks.is_empty() {
-            return Err(HrpcError::Custom("no block in file".into()));
+            return Err(HDFSError::NoAvailableBlock);
         }
         let client_name = fs.client_name.clone();
         let conn_fn = fs.connect_data_node.clone();
@@ -79,7 +79,7 @@ fn create_blk_stream<D: Read + Write>(
     conn_fn: &Arc<dyn Fn(&DatanodeIdProto) -> Result<D, io::Error>>,
     client_name: String,
     checksum: Option<bool>,
-) -> Result<BlockReadStream<D>, HrpcError> {
+) -> Result<BlockReadStream<D>, HDFSError> {
     let stream = block
         .locs
         .iter()
@@ -96,7 +96,7 @@ fn create_blk_stream<D: Read + Write>(
                 None
             }
         });
-    let stream = stream.ok_or_else(|| HrpcError::Custom("no usable location".into()))?;
+    let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
     let blk_stream = BlockReadStream::new(client_name, stream, 0, checksum, block)?;
     Ok(blk_stream)
 }

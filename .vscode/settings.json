@@ -1,6 +1,6 @@
 {
     "rust-analyzer.cargo.features": [
-        "trace"
+        "trace_dbg"
     ],
     "cSpell.words": [
         "Datanode",

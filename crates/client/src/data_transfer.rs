@@ -1,5 +1,6 @@
 use std::io::{self, Read, Write};
 
+use crc::Digest;
 use hdfs_types::hdfs::{
     op_write_block_proto::BlockConstructionStage, BaseHeaderProto, BlockOpResponseProto,
     ChecksumProto, ChecksumTypeProto, ClientOperationHeaderProto, ClientReadStatusProto,
@@ -11,10 +12,59 @@ use prost::{
     Message,
 };
 
-use crate::{
-    fs::{read_be_u16, read_be_u32, read_prefixed_message},
-    HrpcError, IpcConnection, DATA_TRANSFER_PROTO, READ_BLOCK, WRITE_BLOCK,
-};
+use crate::{crc32, hrpc::HRpc, HrpcError, DATA_TRANSFER_PROTO, READ_BLOCK, WRITE_BLOCK};
+
+fn read_prefixed_message<S: Read, M: Message + Default>(stream: &mut S) -> Result<M, HrpcError> {
+    use prost::encoding::decode_varint;
+    let mut buf = BytesMut::new();
+    let mut tmp_buf = [0u8];
+    let length = loop {
+        stream.read_exact(&mut tmp_buf)?;
+        buf.put_u8(tmp_buf[0]);
+        match decode_varint(&mut buf.clone()) {
+            Ok(length) => break length,
+            Err(_) => {
+                continue;
+            }
+        }
+    };
+    buf.clear();
+    buf.resize(length as usize, 0);
+    stream.read_exact(&mut buf)?;
+    let msg = M::decode(buf)?;
+    Ok(msg)
+}
+
+fn read_be_u32<S: Read>(stream: &mut S) -> io::Result<u32> {
+    let mut bytes = [0; 4];
+    stream.read_exact(&mut bytes)?;
+    Ok(u32::from_be_bytes(bytes))
+}
+
+fn read_be_u16<S: Read>(stream: &mut S) -> io::Result<u16> {
+    let mut bytes = [0; 2];
+    stream.read_exact(&mut bytes)?;
+    Ok(u16::from_be_bytes(bytes))
+}
+
+macro_rules! trace_valuable {
+    ($($s:stmt);*;) => {
+        #[cfg(feature="trace_valuable")]
+        {
+            use valuable::Valuable;
+            $($s)*
+        }
+    };
+}
+
+macro_rules! trace_dbg {
+    ($($s:stmt);*;) => {
+        #[cfg(feature="trace_dbg")]
+        {
+            $($s)*
+        }
+    };
+}
 
 #[allow(unused)]
 pub struct BlockReadStream<S> {
@@ -22,7 +72,10 @@ pub struct BlockReadStream<S> {
     pub(crate) packet_remain: usize,
     checksum: ChecksumProto,
     checksum_data: Vec<u32>,
-    checksum_init: u32,
+    checksum_idx: usize,
+    read: u32,
+    digest_fn: Box<dyn Fn() -> Digest<'static, u32>>,
+    digest: Digest<'static, u32>,
 }
 
 impl<S: Read + Write> BlockReadStream<S> {
@@ -52,18 +105,23 @@ impl<S: Read + Write> BlockReadStream<S> {
         buf.put_u8(READ_BLOCK);
         let length = req.encoded_len();
         buf.reserve(prost::length_delimiter_len(length) + length + 2);
-        #[cfg(feature = "trace")]
-        {
-            tracing::trace!(target: "data-transfer", "req: {req:#?}");
+        trace_dbg! {
+            tracing::trace!(target: "data-transfer", "\nreq: {req:#?}");
+        }
+        trace_valuable! {
+            tracing::trace!(target: "data-transfer", req=req.as_value());
+
         }
         req.encode_length_delimited(&mut buf)?;
         stream.write_all(&buf)?;
         stream.flush()?;
         // TODO
         let resp: BlockOpResponseProto = read_prefixed_message(&mut stream)?;
-        #[cfg(feature = "trace")]
-        {
-            tracing::trace!(target: "data-transfer", "resp: {resp:#?}");
+        trace_dbg! {
+            tracing::trace!(target: "data-transfer", "\nresp: {resp:#?}");
+        }
+        trace_valuable! {
+            tracing::trace!(target: "data-transfer", resp=resp.as_value());
         }
         if !matches!(resp.status(), Status::Success) {
             tracing::warn!(
@@ -80,9 +138,11 @@ impl<S: Read + Write> BlockReadStream<S> {
         let header = PacketHeaderProto::decode(buf)?;
         if header.data_len == 0 {
             let read_resp = ClientReadStatusProto { status: 0 };
-            #[cfg(feature = "trace")]
-            {
-                tracing::trace!(target: "data-transfer", "resp: {read_resp:#?}");
+            trace_dbg! {
+                tracing::trace!(target: "data-transfer", "\nresp: {read_resp:#?}");
+            }
+            trace_valuable! {
+                tracing::trace!(target: "data-transfer", resp=read_resp.as_value());
             }
             stream.write_all(&read_resp.encode_length_delimited_to_vec())?;
             stream.flush()?;
@@ -95,7 +155,8 @@ impl<S: Read + Write> BlockReadStream<S> {
                 bytes_per_checksum: 512,
                 r#type: ChecksumTypeProto::ChecksumNull as i32,
             });
-        let checksum_data = match checksum.r#type() {
+        let checksum_ty = checksum.r#type();
+        let checksum_data = match checksum_ty {
             ChecksumTypeProto::ChecksumNull => vec![],
             _ => {
                 let len = (header.data_len as u32 / checksum.bytes_per_checksum) * 4 + 4;
@@ -107,19 +168,26 @@ impl<S: Read + Write> BlockReadStream<S> {
                     .collect()
             }
         };
-
+        let digest_fn = move || match checksum_ty {
+            ChecksumTypeProto::ChecksumNull | ChecksumTypeProto::ChecksumCrc32 => {
+                crc32::CRC32.digest()
+            }
+            ChecksumTypeProto::ChecksumCrc32c => crc32::CRC32C.digest(),
+        };
         Ok(Self {
             stream,
             packet_remain: header.data_len as usize,
             checksum,
             checksum_data,
-            checksum_init: 0,
+            read: 0,
+            checksum_idx: 0,
+            digest: digest_fn(),
+            digest_fn: Box::new(digest_fn),
         })
     }
 }
 
 impl<S: Read + Write> Read for BlockReadStream<S> {
-    // TODO check checksum
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.packet_remain == 0 {
             return Ok(0);
@@ -134,6 +202,49 @@ impl<S: Read + Write> Read for BlockReadStream<S> {
             self.packet_remain -= buf.len();
             buf.len()
         };
+        if matches!(
+            self.checksum.r#type(),
+            ChecksumTypeProto::ChecksumCrc32 | ChecksumTypeProto::ChecksumCrc32c
+        ) {
+            let total = self.read as usize + buf.len();
+            let bytes_per_checksum = self.checksum.bytes_per_checksum as usize;
+            if total >= bytes_per_checksum {
+                let step = total / bytes_per_checksum;
+                let mut offset = bytes_per_checksum - self.read as usize;
+                for i in 0..step {
+                    if let Some(checksum) = self.checksum_data.get(self.checksum_idx).copied() {
+                        let (start, end) = if i == 0 {
+                            (0, offset)
+                        } else {
+                            (
+                                offset,
+                                (offset + bytes_per_checksum as usize).min(buf.len()),
+                            )
+                        };
+                        self.digest.update(&buf[start..end]);
+                        let is_fin = self.packet_remain == 0 || (end - start == bytes_per_checksum);
+                        if is_fin {
+                            let digest = (self.digest_fn)();
+                            let old_digest = std::mem::replace(&mut self.digest, digest);
+                            let cal = old_digest.finalize();
+                            if cal != checksum {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "checksum validation failed",
+                                ));
+                            }
+                        }
+                        offset += bytes_per_checksum;
+                    } else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "checksum validation failed",
+                        ));
+                    }
+                    self.checksum_idx += 1;
+                }
+            }
+        }
         Ok(num)
     }
 }
@@ -151,7 +262,7 @@ pub struct BlockWriteStream<S> {
 impl<S: Read + Write> BlockWriteStream<S> {
     pub fn close<D: Read + Write>(
         &mut self,
-        ipc: &mut IpcConnection<D>,
+        ipc: &mut HRpc<D>,
     ) -> Result<ExtendedBlockProto, HrpcError> {
         self.write(&[], true)?;
         self.stream.flush()?;
@@ -197,17 +308,22 @@ impl<S: Read + Write> BlockWriteStream<S> {
         buf.put_u8(WRITE_BLOCK);
         let length = req.encoded_len();
         buf.reserve(prost::length_delimiter_len(length) + length + 2);
-        #[cfg(feature = "trace")]
-        {
-            tracing::trace!(target: "data-transfer", "req: {req:?}");
+        trace_dbg! {
+            tracing::trace!(target: "data-transfer", "\nreq: {req:#?}");
+        }
+        trace_valuable! {
+            tracing::trace!(target: "data-transfer", req=req.as_value());
         }
         req.encode_length_delimited(&mut buf)?;
         stream.write_all(&buf)?;
         stream.flush()?;
 
         let message: BlockOpResponseProto = read_prefixed_message(&mut stream)?;
-        {
-            tracing::trace!(target: "data-transfer", "resp: {message:?}");
+        trace_dbg! {
+            tracing::trace!(target: "data-transfer", "\nresp: {message:#?}");
+        }
+        trace_valuable! {
+            tracing::trace!(target: "data-transfer", resp=message.as_value());
         }
         if !matches!(message.status(), Status::Success) {
             tracing::warn!(
@@ -236,9 +352,11 @@ impl<S: Read + Write> BlockWriteStream<S> {
             data_len: data.len() as i32,
             sync_block: None,
         };
-        #[cfg(feature = "trace")]
+
+        #[cfg(any(feature = "trace_dbg", feature = "trace_valuable"))]
         {
             tracing::trace!(
+                target: "data-transfer",
                 seq = self.seq_no,
                 offset = self.offset,
                 data_len = data.len(),
@@ -259,16 +377,13 @@ impl<S: Read + Write> BlockWriteStream<S> {
         match self.checksum_ty {
             ChecksumTypeProto::ChecksumNull => {}
             ChecksumTypeProto::ChecksumCrc32 => {
-                let crc32 = crc::Crc::<u32>::new(&crc::CRC_32_CKSUM);
                 for chunk in data.chunks(self.bytes_per_checksum as usize) {
-                    buffer.put_u32(crc32.checksum(chunk));
+                    buffer.put_u32(crc32::CRC32.checksum(chunk));
                 }
             }
             ChecksumTypeProto::ChecksumCrc32c => {
-                // TODO move to struct ?
-                let crc32 = crc::Crc::<u32>::new(&crc::CRC_32_ISCSI);
                 for chunk in data.chunks(self.bytes_per_checksum as usize) {
-                    buffer.put_u32(crc32.checksum(chunk));
+                    buffer.put_u32(crc32::CRC32C.checksum(chunk));
                 }
             }
         }
@@ -277,9 +392,11 @@ impl<S: Read + Write> BlockWriteStream<S> {
         self.stream.flush()?;
 
         let ack: PipelineAckProto = read_prefixed_message(&mut self.stream)?;
-        #[cfg(feature = "trace")]
-        {
-            tracing::trace!("ack: {ack:?}");
+        trace_dbg! {
+            tracing::trace!(target: "data-transfer", "\nack: {ack:#?}");
+        }
+        trace_valuable! {
+            tracing::trace!(target: "data-transfer", ack=ack.as_value());
         }
         if ack.seqno != self.seq_no {
             // TODO check ack

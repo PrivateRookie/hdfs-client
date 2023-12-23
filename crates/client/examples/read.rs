@@ -1,6 +1,6 @@
 use std::{io::Read, net::TcpStream};
 
-use hdfs_client::{BufStream, IpcConnection, ReaderOptions, FS};
+use hdfs_client::{hrpc::HRpc, BufStream, ReaderOptions, FS};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -11,7 +11,7 @@ fn main() {
         move || {
             let stream = TcpStream::connect("127.0.0.1:9000")?;
             let stream = BufStream::new(stream);
-            let ipc = IpcConnection::connect(stream, "root", None, None)?;
+            let ipc = HRpc::connect(stream, "root", None, None)?;
             Ok(ipc)
         },
         move |node| {

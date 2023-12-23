@@ -10,7 +10,7 @@ use hdfs_types::hdfs::{
     GetFileInfoRequestProto, LocatedBlocksProto,
 };
 
-use crate::{fs::block::BlockReadStream, HrpcError, FS};
+use crate::{data_transfer::BlockReadStream, HrpcError, FS};
 
 #[derive(Default)]
 pub struct ReaderOptions {

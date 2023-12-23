@@ -4,20 +4,17 @@ use std::{
     sync::Arc,
 };
 
-use prost::{
-    bytes::{BufMut, BytesMut},
-    DecodeError, EncodeError, Message,
-};
+use prost::{DecodeError, EncodeError};
 
-use crate::{HrpcError, IpcConnection};
+use crate::{hrpc::HRpc, HrpcError};
 use hdfs_types::{
     common::RpcCallerContextProto,
     hdfs::{BlockOpResponseProto, DatanodeIdProto},
 };
 
-pub const DATA_TRANSFER_PROTO: u16 = 28;
-pub const READ_BLOCK: u8 = 81;
-pub const WRITE_BLOCK: u8 = 80;
+pub(crate) const DATA_TRANSFER_PROTO: u16 = 28;
+pub(crate) const READ_BLOCK: u8 = 81;
+pub(crate) const WRITE_BLOCK: u8 = 80;
 const CLIENT_NAME: &str = "hdfs-rust-client";
 
 #[derive(Debug, thiserror::Error)]
@@ -52,19 +49,6 @@ impl From<DecodeError> for BlockError {
     }
 }
 
-fn read_be_u32<S: Read>(stream: &mut S) -> io::Result<u32> {
-    let mut bytes = [0; 4];
-    stream.read_exact(&mut bytes)?;
-    Ok(u32::from_be_bytes(bytes))
-}
-
-fn read_be_u16<S: Read>(stream: &mut S) -> io::Result<u16> {
-    let mut bytes = [0; 2];
-    stream.read_exact(&mut bytes)?;
-    Ok(u16::from_be_bytes(bytes))
-}
-
-mod block;
 mod writer;
 pub use writer::{FileWriter, WriterOptions};
 mod reader;
@@ -135,9 +119,9 @@ impl FSConfig {
         &self,
         mut connect_fn: impl FnMut() -> io::Result<S>,
         ctx: impl Into<Option<RpcCallerContextProto>>,
-    ) -> Result<IpcConnection<S>, HrpcError> {
+    ) -> Result<HRpc<S>, HrpcError> {
         let stream = connect_fn()?;
-        IpcConnection::connect(
+        HRpc::connect(
             stream,
             &self.user,
             ctx.into().unwrap_or_else(|| RpcCallerContextProto {
@@ -158,7 +142,7 @@ impl FSConfig {
             move || {
                 let stream = TcpStream::connect(format!("{}:{}", config.name_node, config.port))?;
                 let stream = BufStream::new(stream);
-                let ipc = IpcConnection::connect(stream, &config.user, ctx.clone(), None)?;
+                let ipc = HRpc::connect(stream, &config.user, ctx.clone(), None)?;
                 Ok(ipc)
             },
             |datanode| {
@@ -171,37 +155,16 @@ impl FSConfig {
     }
 }
 
-fn read_prefixed_message<S: Read, M: Message + Default>(stream: &mut S) -> Result<M, HrpcError> {
-    use prost::encoding::decode_varint;
-    let mut buf = BytesMut::new();
-    let mut tmp_buf = [0u8];
-    let length = loop {
-        stream.read_exact(&mut tmp_buf)?;
-        buf.put_u8(tmp_buf[0]);
-        match decode_varint(&mut buf.clone()) {
-            Ok(length) => break length,
-            Err(_) => {
-                continue;
-            }
-        }
-    };
-    buf.clear();
-    buf.resize(length as usize, 0);
-    stream.read_exact(&mut buf)?;
-    let msg = M::decode(buf)?;
-    Ok(msg)
-}
-
 pub struct FS<S: Read + Write, D: Read + Write> {
     client_name: String,
-    ipc: IpcConnection<S>,
-    create_ipc: Box<dyn Fn() -> io::Result<IpcConnection<S>>>,
+    ipc: HRpc<S>,
+    create_ipc: Box<dyn Fn() -> io::Result<HRpc<S>>>,
     connect_data_node: Arc<dyn Fn(&DatanodeIdProto) -> io::Result<D> + 'static>,
 }
 
 impl<S: Read + Write, D: Read + Write> FS<S, D> {
     pub fn new(
-        create_ipc: impl Fn() -> io::Result<IpcConnection<S>> + 'static,
+        create_ipc: impl Fn() -> io::Result<HRpc<S>> + 'static,
         connect_datanode: impl Fn(&DatanodeIdProto) -> io::Result<D> + 'static,
     ) -> io::Result<Self> {
         let client_name = format!("{}_{}", CLIENT_NAME, uuid::Uuid::new_v4());

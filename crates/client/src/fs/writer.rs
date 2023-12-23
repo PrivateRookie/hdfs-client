@@ -10,14 +10,14 @@ use hdfs_types::hdfs::{
     GetServerDefaultsRequestProto, HdfsFileStatusProto,
 };
 
-use crate::{HrpcError, IpcConnection, FS};
+use crate::{hrpc::HRpc, HrpcError, FS};
 
-use super::block::BlockWriteStream;
+use crate::data_transfer::BlockWriteStream;
 
 pub struct FileWriter<S: Read + Write, D: Read + Write> {
     written: u64,
     block_size: u64,
-    ipc: IpcConnection<S>,
+    ipc: HRpc<S>,
     connect_data_node: Arc<dyn Fn(&DatanodeIdProto) -> io::Result<D>>,
     fs: HdfsFileStatusProto,
     default: FsServerDefaultsProto,
@@ -105,10 +105,6 @@ impl WriterOptions {
         }
     }
 
-    // pub fn append(self, path: impl AsRef<Path>) -> FileWriter {
-    //     todo!()
-    // }
-
     pub fn create<S: Read + Write, D: Read + Write>(
         self,
         path: impl AsRef<Path>,
@@ -162,7 +158,7 @@ impl WriterOptions {
 }
 
 fn create_blk<S: Read + Write, D: Read + Write>(
-    ipc: &mut IpcConnection<S>,
+    ipc: &mut HRpc<S>,
     client_name: String,
     path: String,
     fs_status: &HdfsFileStatusProto,

@@ -302,7 +302,7 @@ dependencies = [
  "file-mode",
  "hdfs-types",
  "prost",
- "regex",
+ "socket2",
  "thiserror",
  "time",
  "tonic",
@@ -736,6 +736,16 @@ name = "smallvec"
 version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4dccd0940a2dcdf68d092b8cbab7dc0ad8fa938bf95787e1b916b0e3d0e8e970"
+
+[[package]]
+name = "socket2"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5fac59a5cb5dd637972e5fca70daf0523c9067fcdc4842f053dae04a18f8e9"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
 
 [[package]]
 name = "strsim"

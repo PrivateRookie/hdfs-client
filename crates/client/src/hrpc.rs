@@ -57,7 +57,8 @@ pub struct HRpc<S> {
 impl<S: Write + Read> HRpc<S> {
     pub fn connect(
         mut stream: S,
-        user: &str,
+        effective_user: impl Into<Option<String>>,
+        real_user: impl Into<Option<String>>,
         context: impl Into<Option<RpcCallerContextProto>>,
         handshake: impl Into<Option<Handshake>>,
     ) -> Result<Self, HDFSError> {
@@ -80,8 +81,8 @@ impl<S: Write + Read> HRpc<S> {
         let ipc_req = IpcConnectionContextProto {
             protocol: Some(PROTOCOL.into()),
             user_info: Some(UserInformationProto {
-                effective_user: Some(user.into()),
-                real_user: None,
+                effective_user: effective_user.into(),
+                real_user: real_user.into(),
             }),
         };
         let ori = buf.len();

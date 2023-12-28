@@ -76,7 +76,7 @@ pub struct BlockReadStream<S> {
     checksum: ChecksumProto,
     checksum_data: Vec<u32>,
     checksum_idx: usize,
-    read: u32,
+    checksum_read: usize,
     digest_fn: Box<dyn Fn() -> Digest<'static, u32>>,
     digest: Digest<'static, u32>,
 }
@@ -118,7 +118,6 @@ impl<S: Read + Write> BlockReadStream<S> {
         req.encode_length_delimited(&mut buf)?;
         stream.write_all(&buf)?;
         stream.flush()?;
-        // TODO
         let resp: BlockOpResponseProto = read_prefixed_message(&mut stream)?;
         trace_dbg! {
             tracing::trace!(target: "data-transfer", "\nresp: {resp:#?}");
@@ -162,13 +161,17 @@ impl<S: Read + Write> BlockReadStream<S> {
         let checksum_data = match checksum_ty {
             ChecksumTypeProto::ChecksumNull => vec![],
             _ => {
-                let len = (header.data_len as u32 / checksum.bytes_per_checksum) * 4 + 4;
-                let mut data = vec![0; len as usize];
-                stream.read_exact(&mut data)?;
-                data.as_slice()
-                    .chunks_exact(4)
-                    .map(|s| u32::from_be_bytes(s.try_into().unwrap()))
-                    .collect()
+                if header.data_len == 0 {
+                    vec![]
+                } else {
+                    let len = (header.data_len as u32).div_ceil(checksum.bytes_per_checksum) * 4;
+                    let mut data = vec![0; len as usize];
+                    stream.read_exact(&mut data)?;
+                    data.as_slice()
+                        .chunks_exact(4)
+                        .map(|s| u32::from_be_bytes(s.try_into().unwrap()))
+                        .collect()
+                }
             }
         };
         let digest_fn = move || match checksum_ty {
@@ -182,73 +185,79 @@ impl<S: Read + Write> BlockReadStream<S> {
             packet_remain: header.data_len as usize,
             checksum,
             checksum_data,
-            read: 0,
+            checksum_read: 0,
             checksum_idx: 0,
             digest: digest_fn(),
             digest_fn: Box::new(digest_fn),
         })
     }
-}
 
-impl<S: Read + Write> Read for BlockReadStream<S> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    fn inner_read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.packet_remain == 0 {
             return Ok(0);
         }
-        let num = if buf.len() >= self.packet_remain {
-            self.stream.read_exact(&mut buf[..self.packet_remain])?;
-            let num = self.packet_remain;
-            self.packet_remain = 0;
-            num
-        } else {
-            self.stream.read_exact(buf)?;
-            self.packet_remain -= buf.len();
-            buf.len()
-        };
+
+        let max_read = self.packet_remain.min(buf.len());
+        tracing::info!(
+            buf_len = buf.len(),
+            remain = self.packet_remain,
+            checksum_read = self.checksum_read
+        );
+        self.stream.read_exact(&mut buf[..max_read])?;
+        self.packet_remain -= max_read;
         if matches!(
             self.checksum.r#type(),
             ChecksumTypeProto::ChecksumCrc32 | ChecksumTypeProto::ChecksumCrc32c
         ) {
-            let total = self.read as usize + buf.len();
             let bytes_per_checksum = self.checksum.bytes_per_checksum as usize;
-            if total >= bytes_per_checksum {
-                let step = total / bytes_per_checksum;
-                let mut offset = bytes_per_checksum - self.read as usize;
+            if self.checksum_read + max_read >= bytes_per_checksum || self.packet_remain == 0 {
+                let step = max_read / bytes_per_checksum + 1;
                 for i in 0..step {
-                    if let Some(checksum) = self.checksum_data.get(self.checksum_idx).copied() {
-                        let (start, end) = if i == 0 {
-                            (0, offset)
-                        } else {
-                            (
-                                offset,
-                                (offset + bytes_per_checksum as usize).min(buf.len()),
-                            )
-                        };
-                        self.digest.update(&buf[start..end]);
-                        let is_fin = self.packet_remain == 0 || (end - start == bytes_per_checksum);
-                        if is_fin {
-                            let digest = (self.digest_fn)();
-                            let old_digest = std::mem::replace(&mut self.digest, digest);
-                            let cal = old_digest.finalize();
-                            if cal != checksum {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "checksum validation failed",
-                                ));
-                            }
-                        }
-                        offset += bytes_per_checksum;
+                    let (start, end) = if i == 0 {
+                        (0, (bytes_per_checksum - self.checksum_read))
                     } else {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "checksum validation failed",
-                        ));
+                        (
+                            bytes_per_checksum * i - self.checksum_read,
+                            (bytes_per_checksum * (i + 1) - self.checksum_read),
+                        )
+                    };
+                    let end = end.min(max_read);
+                    self.digest.update(&buf[start..end]);
+                    if (self.packet_remain == 0 && i + 1 == step)
+                        || (end + self.checksum_read) % bytes_per_checksum == 0
+                    {
+                        tracing::info!("{:?} {}", self.checksum_data, self.checksum_idx);
+                        let checksum = self.checksum_data[self.checksum_idx];
+                        let digest = (self.digest_fn)();
+                        let old_digest = std::mem::replace(&mut self.digest, digest);
+                        let cal = old_digest.finalize();
+                        if cal != checksum {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "checksum validation failed expect: {} got: {}",
+                                    checksum, cal
+                                ),
+                            ));
+                        }
+                        tracing::debug!("checksum valid ok");
                     }
                     self.checksum_idx += 1;
                 }
+                self.checksum_read = (self.checksum_read + max_read) % bytes_per_checksum;
+            } else {
+                self.digest.update(&buf[..max_read]);
+                self.checksum_read += max_read;
             }
         }
-        Ok(num)
+
+        Ok(max_read)
+    }
+}
+
+impl<S: Read + Write> Read for BlockReadStream<S> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner_read(buf)
     }
 }
 
@@ -347,7 +356,10 @@ impl<S: Read + Write> BlockWriteStream<S> {
         })
     }
 
-    pub fn write(&mut self, data: &[u8], last: bool) -> Result<(), HDFSError> {
+    fn inner_write(&mut self, data: &[u8], last: bool) -> Result<(), HDFSError> {
+        if data.is_empty() && !last {
+            return Ok(());
+        }
         let header = PacketHeaderProto {
             offset_in_block: self.offset as i64,
             seqno: self.seq_no,
@@ -369,7 +381,7 @@ impl<S: Read + Write> BlockWriteStream<S> {
         let chunks = if data.is_empty() {
             0
         } else {
-            data.len() / self.bytes_per_checksum as usize + 1
+            data.len().div_ceil(self.bytes_per_checksum as usize)
         };
         let total_len = data.len() + chunks * 4 + 4;
         let mut buffer = BytesMut::new();
@@ -407,5 +419,21 @@ impl<S: Read + Write> BlockWriteStream<S> {
         self.seq_no += 1;
         self.offset += data.len() as u64;
         Ok(())
+    }
+
+    pub fn write(&mut self, data: &[u8], last: bool) -> Result<(), HDFSError> {
+        if !data.is_empty()
+            && self.offset % (self.bytes_per_checksum as u64) != 0
+            && self.offset + data.len() as u64 > self.bytes_per_checksum as u64
+        {
+            let split = self.bytes_per_checksum as usize
+                - self.offset as usize % (self.bytes_per_checksum as usize);
+            let split = split.min(data.len());
+            self.inner_write(&data[..split], last)?;
+            self.inner_write(&data[split..], last)?;
+            Ok(())
+        } else {
+            self.inner_write(data, last)
+        }
     }
 }

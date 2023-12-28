@@ -10,7 +10,7 @@ use hdfs_types::hdfs::{
     GetFileInfoRequestProto, LocatedBlocksProto,
 };
 
-use crate::{data_transfer::BlockReadStream, HDFSError, FS};
+use crate::{data_transfer::BlockReadStream, HDFSError, IOType, HDFS};
 
 #[derive(Default)]
 pub struct ReaderOptions {
@@ -21,7 +21,7 @@ impl ReaderOptions {
     pub fn open<S: Read + Write, D: Read + Write>(
         self,
         path: impl AsRef<Path>,
-        fs: &mut FS<S, D>,
+        fs: &mut HDFS<S, D>,
     ) -> Result<FileReader<D>, HDFSError> {
         let src = path.as_ref().to_string_lossy().to_string();
         let (_, info) = fs
@@ -76,33 +76,34 @@ impl ReaderOptions {
 
 fn create_blk_stream<D: Read + Write>(
     block: hdfs_types::hdfs::LocatedBlockProto,
-    conn_fn: &Arc<dyn Fn(&DatanodeIdProto) -> Result<D, io::Error>>,
+    conn_fn: &Arc<dyn Fn(&DatanodeIdProto, IOType) -> Result<D, io::Error>>,
     client_name: String,
     checksum: Option<bool>,
 ) -> Result<BlockReadStream<D>, HDFSError> {
-    let stream = block
-        .locs
-        .iter()
-        .enumerate()
-        .find_map(|(idx, loc)| match conn_fn(&loc.id) {
-            Ok(stream) => Some(stream),
-            Err(e) => {
-                tracing::info!(
-                    "try {} location of block {} failed {}",
-                    idx + 1,
-                    block.b.block_id,
-                    e
-                );
-                None
-            }
-        });
+    let stream =
+        block
+            .locs
+            .iter()
+            .enumerate()
+            .find_map(|(idx, loc)| match conn_fn(&loc.id, IOType::Read) {
+                Ok(stream) => Some(stream),
+                Err(e) => {
+                    tracing::info!(
+                        "try {} location of block {} failed {}",
+                        idx + 1,
+                        block.b.block_id,
+                        e
+                    );
+                    None
+                }
+            });
     let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
     let blk_stream = BlockReadStream::new(client_name, stream, 0, checksum, block)?;
     Ok(blk_stream)
 }
 
 pub struct FileReader<D: Read + Write> {
-    connect_data_node: Arc<dyn Fn(&DatanodeIdProto) -> io::Result<D>>,
+    connect_data_node: Arc<dyn Fn(&DatanodeIdProto, IOType) -> io::Result<D>>,
     locations: LocatedBlocksProto,
     block_idx: usize,
     client_name: String,

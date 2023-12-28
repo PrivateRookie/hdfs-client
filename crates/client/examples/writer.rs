@@ -1,31 +1,23 @@
-use std::{io::Write, net::TcpStream};
+use std::io::Write;
 
-use hdfs_client::{hrpc::HRpc, BufStream, WriterOptions, FS};
+use hdfs_client::{WriterOptions, HDFS};
 
 fn main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
         .pretty()
         .init();
-    let mut fs = FS::new(
-        move || {
-            let stream = TcpStream::connect("127.0.0.1:9000")?;
-            let stream = BufStream::new(stream);
-            let ipc = HRpc::connect(stream, "root", None, None)?;
-            Ok(ipc)
-        },
-        move |node| {
-            let stream = TcpStream::connect(("127.0.0.1", node.xfer_port as u16))?;
-            let stream = BufStream::new(stream);
-            Ok(stream)
-        },
-    )
-    .unwrap();
+    let mut fs = HDFS::connect("localhost:9000", "root".to_string()).unwrap();
 
     let mut fd = WriterOptions::default()
         .checksum(None)
         .create("/test/hello.txt", &mut fs)
         .unwrap();
-    fd.write_all("Hello World\n".to_string().as_bytes())
-        .unwrap();
+    // FIXME write 512 will hang
+    fd.write_all(&vec![0].repeat(512)).unwrap();
+    // for i in 0..1 {
+    //     tracing::info!(seq = i);
+    //     writeln!(fd, "[{i:0>2}] Hello World").unwrap();
+    // }
+    // fd.flush().unwrap();
 }

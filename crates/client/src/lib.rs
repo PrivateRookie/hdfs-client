@@ -11,8 +11,7 @@ mod crc32;
 pub mod data_transfer;
 pub mod hrpc;
 
-
-/// name node 通信错误
+/// hdfs error
 #[derive(Debug, thiserror::Error)]
 pub enum HDFSError {
     #[error("{0}")]
@@ -63,7 +62,7 @@ impl From<HDFSError> for io::Error {
                 io::Error::new(io::ErrorKind::InvalidData, "mismatch checksum")
             }
             HDFSError::EmptyFS => {
-                io::Error::new(io::ErrorKind::InvalidData, "namenode return empty fs")
+                io::Error::new(io::ErrorKind::InvalidData, "name node return empty fs")
             }
             HDFSError::NoAvailableBlock => {
                 io::Error::new(io::ErrorKind::UnexpectedEof, "no available block")

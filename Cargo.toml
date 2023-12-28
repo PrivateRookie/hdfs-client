@@ -4,3 +4,7 @@ resolver = "2"
 package.version = "0.1.0"
 
 [workspace.dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1.37"
+time = { version = "0.3.19", features = ["formatting", "parsing", "macros"] }
+tracing-subscriber = { version = "0.3.18", features = ["valuable", "json"] }

@@ -10,7 +10,7 @@ use hdfs_types::hdfs::{
     GetServerDefaultsRequestProto, HdfsFileStatusProto,
 };
 
-use crate::{hrpc::HRpc, HDFSError, FS};
+use crate::{hrpc::HRpc, HDFSError, IOType, HDFS};
 
 use crate::data_transfer::BlockWriteStream;
 
@@ -18,7 +18,7 @@ pub struct FileWriter<S: Read + Write, D: Read + Write> {
     written: u64,
     block_size: u64,
     ipc: HRpc<S>,
-    connect_data_node: Arc<dyn Fn(&DatanodeIdProto) -> io::Result<D>>,
+    connect_data_node: Arc<dyn Fn(&DatanodeIdProto, IOType) -> io::Result<D>>,
     fs: HdfsFileStatusProto,
     default: FsServerDefaultsProto,
     client_name: String,
@@ -108,7 +108,7 @@ impl WriterOptions {
     pub fn create<S: Read + Write, D: Read + Write>(
         self,
         path: impl AsRef<Path>,
-        fs: &mut FS<S, D>,
+        fs: &mut HDFS<S, D>,
     ) -> Result<FileWriter<S, D>, HDFSError> {
         let (_, default) = fs
             .ipc
@@ -160,7 +160,7 @@ fn create_blk<S: Read + Write, D: Read + Write>(
     client_name: String,
     path: String,
     fs_status: &HdfsFileStatusProto,
-    conn_fn: Arc<dyn Fn(&DatanodeIdProto) -> Result<D, io::Error>>,
+    conn_fn: Arc<dyn Fn(&DatanodeIdProto, IOType) -> Result<D, io::Error>>,
     default: &FsServerDefaultsProto,
     previous: Option<ExtendedBlockProto>,
 ) -> Result<BlockWriteStream<D>, HDFSError> {
@@ -173,11 +173,8 @@ fn create_blk<S: Read + Write, D: Read + Write>(
     };
     let (_, resp) = ipc.add_block(req)?;
     let new_blk = resp.block;
-    let stream = new_blk
-        .locs
-        .iter()
-        .enumerate()
-        .find_map(|(idx, loc)| match conn_fn(&loc.id) {
+    let stream = new_blk.locs.iter().enumerate().find_map(|(idx, loc)| {
+        match conn_fn(&loc.id, IOType::Write) {
             Ok(stream) => Some(stream),
             Err(e) => {
                 tracing::info!(
@@ -187,7 +184,8 @@ fn create_blk<S: Read + Write, D: Read + Write>(
                 );
                 None
             }
-        });
+        }
+    });
     let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
     let blk_stream = BlockWriteStream::create(
         client_name.clone(),

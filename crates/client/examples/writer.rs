@@ -1,18 +1,15 @@
 use std::io::Write;
 
-use hdfs_client::{WriterOptions, HDFS};
+use hdfs_client::HDFS;
 
 fn main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
         .pretty()
         .init();
-    let mut fs = HDFS::connect("localhost:9000", "root".to_string()).unwrap();
+    let mut fs = HDFS::connect("localhost:9000", "root").unwrap();
 
-    let mut fd = WriterOptions::default()
-        .checksum(None)
-        .create("/test/hello.txt", &mut fs)
-        .unwrap();
+    let mut fd = fs.create("/test/hello.txt").unwrap();
     // FIXME write 512 will hang
     fd.write_all(include_bytes!("../../../target/test.txt"))
         .unwrap();

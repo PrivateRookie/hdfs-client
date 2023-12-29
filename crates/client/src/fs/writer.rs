@@ -81,12 +81,12 @@ impl<S: Read + Write, D: Read + Write> Write for FileWriter<S, D> {
 #[derive(Debug, Default)]
 #[allow(unused)]
 pub struct WriterOptions {
-    replica: Option<u32>,
-    checksum: Option<ChecksumTypeProto>,
-    block_size: Option<u64>,
-    perm: Option<u32>,
-    unmask: Option<u32>,
-    over_ride: bool,
+    pub replica: Option<u32>,
+    pub checksum: Option<ChecksumTypeProto>,
+    pub block_size: Option<u64>,
+    pub perm: Option<u32>,
+    pub unmask: Option<u32>,
+    pub over_ride: bool,
 }
 
 impl WriterOptions {

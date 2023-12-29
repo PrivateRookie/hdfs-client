@@ -1,10 +1,11 @@
 use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     net::{TcpStream, ToSocketAddrs},
+    path::Path,
     sync::Arc,
 };
 
-use crate::hrpc::HRpc;
+use crate::{hrpc::HRpc, HDFSError};
 use hdfs_types::hdfs::DatanodeIdProto;
 
 const CLIENT_NAME: &str = "hdfs-rust-client";
@@ -117,12 +118,42 @@ pub struct HDFS<S: Read + Write, D: Read + Write> {
     connect_data_node: Arc<dyn Fn(&DatanodeIdProto, IOType) -> io::Result<D> + 'static>,
 }
 
+pub trait ToNameNodes {
+    fn to_name_nodes(self) -> Vec<String>;
+}
+
+impl ToNameNodes for &str {
+    fn to_name_nodes(self) -> Vec<String> {
+        vec![self.to_string()]
+    }
+}
+
+impl ToNameNodes for Vec<String> {
+    fn to_name_nodes(self) -> Vec<String> {
+        self
+    }
+}
+
+impl<S: ToString> ToNameNodes for &[S] {
+    fn to_name_nodes(self) -> Vec<String> {
+        self.iter().map(|s| s.to_string()).collect()
+    }
+}
+
+impl<A: ToString, B: ToString> ToNameNodes for (A, B) {
+    fn to_name_nodes(self) -> Vec<String> {
+        vec![self.0.to_string(), self.1.to_string()]
+    }
+}
+
 impl HDFS<BufStream<TcpStream>, BufStream<TcpStream>> {
-    pub fn connect(name_node: &str, user: impl Into<Option<String>>) -> io::Result<Self> {
-        let name_node = vec![name_node.to_string()];
+    pub fn connect<S: ToString>(
+        name_node: impl ToNameNodes,
+        user: impl Into<Option<S>>,
+    ) -> io::Result<Self> {
         let config = ClientConfig {
-            name_node,
-            effective_user: user.into(),
+            name_node: name_node.to_name_nodes(),
+            effective_user: user.into().map(|s| s.to_string()),
             ..Default::default()
         };
         Self::connect_with(config)
@@ -224,5 +255,114 @@ impl<S: Read + Write, D: Read + Write> HDFS<S, D> {
             create_ipc: Box::new(create_ipc),
             connect_data_node: Arc::new(connect_datanode),
         })
+    }
+
+    pub fn get_rpc(&mut self) -> &mut HRpc<S> {
+        &mut self.ipc
+    }
+
+    pub fn new_rpc(&mut self) -> Result<HRpc<S>, io::Error> {
+        (self.create_ipc)()
+    }
+
+    /// open a file
+    pub fn open(&mut self, path: impl AsRef<Path>) -> Result<FileReader<D>, HDFSError> {
+        ReaderOptions::default().open(path, self)
+    }
+
+    /// use reader option to custom file read options
+    pub fn reader_options(&mut self) -> ReaderOptions {
+        ReaderOptions::default()
+    }
+
+    /// create a file
+    pub fn create(&mut self, path: impl AsRef<Path>) -> Result<FileWriter<S, D>, HDFSError> {
+        WriterOptions::default().create(path, self)
+    }
+
+    /// open a existing file and append content to it
+    pub fn append(&mut self, path: impl AsRef<Path>) -> Result<FileWriter<S, D>, HDFSError> {
+        WriterOptions::default().append(path, self)
+    }
+
+    pub fn writer_options(&mut self) -> WriterOptions {
+        WriterOptions::default()
+    }
+
+    pub fn create_dir(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+        let req = hdfs_types::hdfs::MkdirsRequestProto {
+            src: path.as_ref().to_string_lossy().to_string(),
+            masked: hdfs_types::hdfs::FsPermissionProto { perm: 0o666 },
+            create_parent: false,
+            unmasked: None,
+        };
+        let (_, resp) = self.ipc.mkdirs(req)?;
+        assert!(resp.result);
+        Ok(())
+    }
+
+    pub fn create_dir_all(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+        let req = hdfs_types::hdfs::MkdirsRequestProto {
+            src: path.as_ref().to_string_lossy().to_string(),
+            masked: hdfs_types::hdfs::FsPermissionProto { perm: 0o666 },
+            create_parent: true,
+            unmasked: None,
+        };
+        let (_, resp) = self.ipc.mkdirs(req)?;
+        assert!(resp.result);
+        Ok(())
+    }
+
+    /// read the entire contents of a file into a bytes vector.
+    pub fn read(&mut self, path: impl AsRef<Path>) -> Result<Vec<u8>, HDFSError> {
+        let mut fd = self.open(path)?;
+        let mut buf = vec![0; fd.metadata().length as usize];
+        fd.read_to_end(&mut buf)?;
+        Ok(buf)
+    }
+
+    pub fn remote_dir(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+        let req = hdfs_types::hdfs::DeleteRequestProto {
+            src: path.as_ref().to_string_lossy().to_string(),
+            recursive: false,
+        };
+        let (_, resp) = self.ipc.delete(req)?;
+        assert!(resp.result);
+        Ok(())
+    }
+
+    pub fn remote_dir_all(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+        let req = hdfs_types::hdfs::DeleteRequestProto {
+            src: path.as_ref().to_string_lossy().to_string(),
+            recursive: true,
+        };
+        let (_, resp) = self.ipc.delete(req)?;
+        assert!(resp.result);
+        Ok(())
+    }
+
+    pub fn remove_file(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+        let req = hdfs_types::hdfs::DeleteRequestProto {
+            src: path.as_ref().to_string_lossy().to_string(),
+            recursive: false,
+        };
+        let (_, resp) = self.ipc.delete(req)?;
+        assert!(resp.result);
+        Ok(())
+    }
+
+    pub fn rename(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+    ) -> Result<(), HDFSError> {
+        let req = hdfs_types::hdfs::Rename2RequestProto {
+            src: from.as_ref().to_string_lossy().to_string(),
+            dst: to.as_ref().to_string_lossy().to_string(),
+            overwrite_dest: true,
+            move_to_trash: Some(true),
+        };
+        self.ipc.rename2(req)?;
+        Ok(())
     }
 }

@@ -294,6 +294,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93e7192158dbcda357bdec5fb5788eebf8bbac027f3f33e719d29135ae84156"
 
 [[package]]
+name = "hdfs-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "hdfs-client"
 version = "0.1.0"
 dependencies = [
@@ -310,6 +317,13 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "valuable",
+]
+
+[[package]]
+name = "hdfs-fuse"
+version = "0.1.0"
+dependencies = [
+ "clap",
 ]
 
 [[package]]

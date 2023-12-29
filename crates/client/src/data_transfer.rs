@@ -99,7 +99,7 @@ impl<S: Read + Write> BlockReadStream<S> {
                 client_name,
             },
             offset,
-            len: block.b.num_bytes(),
+            len: block.b.num_bytes() - offset,
             send_checksums,
             caching_strategy: None,
         };
@@ -198,11 +198,6 @@ impl<S: Read + Write> BlockReadStream<S> {
         }
 
         let max_read = self.packet_remain.min(buf.len());
-        tracing::info!(
-            buf_len = buf.len(),
-            remain = self.packet_remain,
-            checksum_read = self.checksum_read
-        );
         self.stream.read_exact(&mut buf[..max_read])?;
         self.packet_remain -= max_read;
         if matches!(
@@ -226,7 +221,6 @@ impl<S: Read + Write> BlockReadStream<S> {
                     if (self.packet_remain == 0 && i + 1 == step)
                         || (end + self.checksum_read) % bytes_per_checksum == 0
                     {
-                        tracing::info!("{:?} {}", self.checksum_data, self.checksum_idx);
                         let checksum = self.checksum_data[self.checksum_idx];
                         let digest = (self.digest_fn)();
                         let old_digest = std::mem::replace(&mut self.digest, digest);
@@ -240,7 +234,6 @@ impl<S: Read + Write> BlockReadStream<S> {
                                 ),
                             ));
                         }
-                        tracing::debug!("checksum valid ok");
                     }
                     self.checksum_idx += 1;
                 }
@@ -293,6 +286,8 @@ impl<S: Read + Write> BlockWriteStream<S> {
         block: LocatedBlockProto,
         bytes_per_checksum: u32,
         checksum_ty: ChecksumTypeProto,
+        offset: u64,
+        append: bool,
     ) -> Result<Self, HDFSError> {
         let req = OpWriteBlockProto {
             header: ClientOperationHeaderProto {
@@ -303,12 +298,16 @@ impl<S: Read + Write> BlockWriteStream<S> {
                 },
                 client_name: client_name.clone(),
             },
-            stage: BlockConstructionStage::PipelineSetupCreate as i32,
+            stage: if append {
+                BlockConstructionStage::PipelineSetupAppend as i32
+            } else {
+                BlockConstructionStage::PipelineSetupCreate as i32
+            },
             pipeline_size: block.locs.len() as u32,
             targets: vec![],
-            min_bytes_rcvd: 0,
-            max_bytes_rcvd: 0,
-            latest_generation_stamp: 0,
+            min_bytes_rcvd: block.b.num_bytes(),
+            max_bytes_rcvd: offset,
+            latest_generation_stamp: block.b.generation_stamp,
             requested_checksum: ChecksumProto {
                 r#type: checksum_ty as i32,
                 bytes_per_checksum,
@@ -347,7 +346,7 @@ impl<S: Read + Write> BlockWriteStream<S> {
         }
         Ok(Self {
             stream,
-            offset: 0,
+            offset,
             seq_no: 0,
             block,
             bytes_per_checksum,

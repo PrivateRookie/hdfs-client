@@ -14,10 +14,7 @@ fn main() {
     }
     .open("/test/hello.txt", &mut fs)
     .unwrap();
-    // let mut content = String::new();
-    // fd.read_to_string(&mut content).unwrap();
-    // println!("{content}");
-    let mut buf = vec![];
-    dbg!(fd.read_to_end(&mut buf)).unwrap();
-    println!(" {}", buf.len());
+    let mut content = String::new();
+    fd.read_to_string(&mut content).unwrap();
+    println!("{content}");
 }

@@ -11,7 +11,7 @@ fn main() {
 
     let mut fd = WriterOptions::default()
         .checksum(None)
-        .create("/test/hello.txt", &mut fs)
+        .append("/test/hello.txt", &mut fs)
         .unwrap();
     // FIXME write 512 will hang
     fd.write_all(include_bytes!("../../../target/test.txt"))

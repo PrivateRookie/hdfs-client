@@ -5,9 +5,9 @@ use std::{
 };
 
 use hdfs_types::hdfs::{
-    AddBlockRequestProto, ChecksumTypeProto, CompleteRequestProto, CreateRequestProto,
-    DatanodeIdProto, ExtendedBlockProto, FsPermissionProto, FsServerDefaultsProto,
-    GetServerDefaultsRequestProto, HdfsFileStatusProto,
+    AddBlockRequestProto, AppendRequestProto, ChecksumTypeProto, CompleteRequestProto,
+    CreateRequestProto, DatanodeIdProto, ExtendedBlockProto, FsPermissionProto,
+    FsServerDefaultsProto, GetServerDefaultsRequestProto, HdfsFileStatusProto,
 };
 
 use crate::{hrpc::HRpc, HDFSError, IOType, HDFS};
@@ -15,6 +15,7 @@ use crate::{hrpc::HRpc, HDFSError, IOType, HDFS};
 use crate::data_transfer::BlockWriteStream;
 
 pub struct FileWriter<S: Read + Write, D: Read + Write> {
+    append: bool,
     written: u64,
     block_size: u64,
     ipc: HRpc<S>,
@@ -52,6 +53,11 @@ impl<S: Read + Write, D: Read + Write> Write for FileWriter<S, D> {
                     self.connect_data_node.clone(),
                     &self.default,
                     Some(prev.clone()),
+                    if self.append {
+                        IOType::Append
+                    } else {
+                        IOType::Write
+                    },
                 )?;
                 blk.write(chunk, false)?;
                 if is_last {
@@ -105,6 +111,67 @@ impl WriterOptions {
         }
     }
 
+    pub fn append<S: Read + Write, D: Read + Write>(
+        self,
+        path: impl AsRef<Path>,
+        fs: &mut HDFS<S, D>,
+    ) -> Result<FileWriter<S, D>, HDFSError> {
+        let (_, default) = fs
+            .ipc
+            .get_server_defaults(GetServerDefaultsRequestProto {})?;
+        let default = default.server_defaults;
+        let path = path.as_ref().to_string_lossy().to_string();
+        let req = AppendRequestProto {
+            src: path.clone(),
+            client_name: fs.client_name.clone(),
+            ..Default::default()
+        };
+        let (_, resp) = fs.ipc.append(req)?;
+        let block = resp
+            .block
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no block in append resp"))?;
+        let fs_status = resp
+            .stat
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no fs status in append resp"))?;
+
+        let stream = block.locs.iter().enumerate().find_map(|(idx, loc)| {
+            match (fs.connect_data_node)(&loc.id, IOType::Append) {
+                Ok(stream) => Some(stream),
+                Err(e) => {
+                    tracing::info!(
+                        "try {} location of block {} failed {e}",
+                        idx + 1,
+                        block.b.block_id
+                    );
+                    None
+                }
+            }
+        });
+        let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
+        let offset = block.b.num_bytes();
+        let blk_stream = BlockWriteStream::create(
+            fs.client_name.clone(),
+            stream,
+            block,
+            default.bytes_per_checksum,
+            default.checksum_type(),
+            offset,
+            true,
+        )?;
+        Ok(FileWriter {
+            append: true,
+            written: 0,
+            block_size: self.block_size.unwrap_or(default.block_size),
+            ipc: (fs.create_ipc)()?,
+            connect_data_node: fs.connect_data_node.clone(),
+            client_name: fs.client_name.clone(),
+            fs: fs_status,
+            default,
+            blk_stream,
+            path,
+        })
+    }
+
     pub fn create<S: Read + Write, D: Read + Write>(
         self,
         path: impl AsRef<Path>,
@@ -139,9 +206,11 @@ impl WriterOptions {
             fs.connect_data_node.clone(),
             &default,
             None,
+            IOType::Write,
         )?;
 
         Ok(FileWriter {
+            append: false,
             written: 0,
             block_size: self.block_size.unwrap_or(default.block_size),
             ipc: (fs.create_ipc)()?,
@@ -163,6 +232,7 @@ fn create_blk<S: Read + Write, D: Read + Write>(
     conn_fn: Arc<dyn Fn(&DatanodeIdProto, IOType) -> Result<D, io::Error>>,
     default: &FsServerDefaultsProto,
     previous: Option<ExtendedBlockProto>,
+    io_ty: IOType,
 ) -> Result<BlockWriteStream<D>, HDFSError> {
     let req = AddBlockRequestProto {
         src: path.clone(),
@@ -173,19 +243,22 @@ fn create_blk<S: Read + Write, D: Read + Write>(
     };
     let (_, resp) = ipc.add_block(req)?;
     let new_blk = resp.block;
-    let stream = new_blk.locs.iter().enumerate().find_map(|(idx, loc)| {
-        match conn_fn(&loc.id, IOType::Write) {
-            Ok(stream) => Some(stream),
-            Err(e) => {
-                tracing::info!(
-                    "try {} location of block {} failed {e}",
-                    idx + 1,
-                    new_blk.b.block_id
-                );
-                None
-            }
-        }
-    });
+    let stream =
+        new_blk
+            .locs
+            .iter()
+            .enumerate()
+            .find_map(|(idx, loc)| match conn_fn(&loc.id, io_ty) {
+                Ok(stream) => Some(stream),
+                Err(e) => {
+                    tracing::info!(
+                        "try {} location of block {} failed {e}",
+                        idx + 1,
+                        new_blk.b.block_id
+                    );
+                    None
+                }
+            });
     let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
     let blk_stream = BlockWriteStream::create(
         client_name.clone(),
@@ -193,6 +266,8 @@ fn create_blk<S: Read + Write, D: Read + Write>(
         new_blk,
         default.bytes_per_checksum,
         default.checksum_type(),
+        0,
+        matches!(io_ty, IOType::Append),
     )?;
     Ok(blk_stream)
 }

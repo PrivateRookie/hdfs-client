@@ -103,7 +103,7 @@ impl<S: Read + Write> Write for BufStream<S> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum IOType {
     Read,
     Write,

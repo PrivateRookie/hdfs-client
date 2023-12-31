@@ -2,6 +2,10 @@
 name = "hdfs-types"
 edition = "2021"
 version = "0.1.0"
+description = "hdfs types used by hdfs-client"
+keywords = ["hdfs", "hadoop"]
+authors = ["PrivateRookie <996514515@qq.com>"]
+license-file = "LICENSE"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

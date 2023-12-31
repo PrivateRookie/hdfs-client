@@ -1,8 +1,11 @@
 [package]
 name = "hdfs-client"
-version.workspace = true
+version = "0.1.0"
 edition = "2021"
-
+description = "hdfs rust native client"
+keywords = ["hdfs", "hadoop"]
+authors = ["PrivateRookie <996514515@qq.com>"]
+license-file = "LICENSE"
 
 [features]
 default = []

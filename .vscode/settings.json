@@ -4,6 +4,7 @@
     ],
     "cSpell.words": [
         "Datanode",
+        "getxattr",
         "hdfs",
         "Hrpc"
     ]

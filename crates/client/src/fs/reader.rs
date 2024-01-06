@@ -56,13 +56,18 @@ impl ReaderOptions {
             }
         };
 
-        if locations.blocks.is_empty() {
-            return Err(HDFSError::NoAvailableBlock);
-        }
         let client_name = fs.client_name.clone();
         let conn_fn = fs.connect_data_node.clone();
-        let block = locations.blocks[0].clone();
-        let blk_stream = create_blk_stream(block, &conn_fn, client_name.clone(), self.checksum, 0)?;
+        let blk_stream = match locations.blocks.first().cloned() {
+            Some(block) => Some(create_blk_stream(
+                block,
+                &conn_fn,
+                client_name.clone(),
+                self.checksum,
+                0,
+            )?),
+            None => None,
+        };
         Ok(FileReader {
             connect_data_node: conn_fn,
             locations,
@@ -111,28 +116,33 @@ pub struct FileReader<D: Read + Write> {
     read: usize,
     block_idx: usize,
     client_name: String,
-    blk_stream: BlockReadStream<D>,
+    blk_stream: Option<BlockReadStream<D>>,
     checksum: Option<bool>,
     metadata: HdfsFileStatusProto,
 }
 
 impl<D: Read + Write> Read for FileReader<D> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let num = self.blk_stream.read(buf)?;
-        self.read += num;
-        if self.blk_stream.packet_remain == 0 {
-            self.block_idx += 1;
-            if let Some(block) = self.locations.blocks.get(self.block_idx).cloned() {
-                self.blk_stream = create_blk_stream(
-                    block,
-                    &self.connect_data_node,
-                    self.client_name.clone(),
-                    self.checksum,
-                    0,
-                )?;
+        if let Some(stream) = &mut self.blk_stream {
+            let num = stream.read(buf)?;
+            self.read += num;
+            if stream.packet_remain == 0 {
+                self.block_idx += 1;
+                if let Some(block) = self.locations.blocks.get(self.block_idx).cloned() {
+                    let blk_stream = create_blk_stream(
+                        block,
+                        &self.connect_data_node,
+                        self.client_name.clone(),
+                        self.checksum,
+                        0,
+                    )?;
+                    self.blk_stream = Some(blk_stream);
+                }
             }
+            Ok(num)
+        } else {
+            Ok(0)
         }
-        Ok(num)
     }
 }
 
@@ -175,16 +185,18 @@ impl<D: Read + Write> FileReader<D> {
             self.read = locations.file_length as usize;
             if let Some(block) = locations.blocks.last().cloned() {
                 let offset = block.b.num_bytes();
-                self.blk_stream = create_blk_stream(
+                self.blk_stream = Some(create_blk_stream(
                     block,
                     &self.connect_data_node,
                     self.client_name.clone(),
                     self.checksum,
                     0,
-                )?;
+                )?);
                 // FIXME can not set direct offset of hdfs block
                 let mut tmp = vec![0; offset as usize];
-                self.blk_stream.read_exact(&mut tmp)?;
+                if let Some(stream) = &mut self.blk_stream {
+                    stream.read_exact(&mut tmp)?;
+                }
             }
             Ok(locations.file_length)
         } else {
@@ -195,16 +207,18 @@ impl<D: Read + Write> FileReader<D> {
                 .find(|blk| blk.offset + blk.b.num_bytes() > pos)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no matched block found"))?;
             let offset = pos - block.offset;
-            self.blk_stream = create_blk_stream(
+            self.blk_stream = Some(create_blk_stream(
                 block,
                 &self.connect_data_node,
                 self.client_name.clone(),
                 self.checksum,
                 offset,
-            )?;
+            )?);
             // FIXME can not set direct offset of hdfs block
             let mut tmp = vec![0; offset as usize];
-            self.blk_stream.read_exact(&mut tmp)?;
+            if let Some(stream) = &mut self.blk_stream {
+                stream.read_exact(&mut tmp)?;
+            }
             self.read = pos as usize;
             Ok(pos)
         }

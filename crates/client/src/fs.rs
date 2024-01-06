@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{hrpc::HRpc, HDFSError};
-use hdfs_types::hdfs::DatanodeIdProto;
+use hdfs_types::hdfs::{DatanodeIdProto, GetListingRequestProto, HdfsFileStatusProto};
 
 const CLIENT_NAME: &str = "hdfs-rust-client";
 
@@ -127,6 +127,11 @@ impl ToNameNodes for &str {
         vec![self.to_string()]
     }
 }
+impl ToNameNodes for String {
+    fn to_name_nodes(self) -> Vec<String> {
+        vec![self]
+    }
+}
 
 impl ToNameNodes for Vec<String> {
     fn to_name_nodes(self) -> Vec<String> {
@@ -137,12 +142,6 @@ impl ToNameNodes for Vec<String> {
 impl<S: ToString> ToNameNodes for &[S] {
     fn to_name_nodes(self) -> Vec<String> {
         self.iter().map(|s| s.to_string()).collect()
-    }
-}
-
-impl<A: ToString, B: ToString> ToNameNodes for (A, B) {
-    fn to_name_nodes(self) -> Vec<String> {
-        vec![self.0.to_string(), self.1.to_string()]
     }
 }
 
@@ -257,6 +256,10 @@ impl<S: Read + Write, D: Read + Write> HDFS<S, D> {
         })
     }
 
+    pub fn client_name(&self) -> &str {
+        &self.client_name
+    }
+
     pub fn get_rpc(&mut self) -> &mut HRpc<S> {
         &mut self.ipc
     }
@@ -321,7 +324,35 @@ impl<S: Read + Write, D: Read + Write> HDFS<S, D> {
         Ok(buf)
     }
 
-    pub fn remote_dir(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+    pub fn read_dir(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<HdfsFileStatusProto>, HDFSError> {
+        let mut start_after = vec![];
+        let mut result = vec![];
+        loop {
+            let req = GetListingRequestProto {
+                src: path.as_ref().to_string_lossy().to_string(),
+                start_after: start_after.clone(),
+                need_location: true,
+            };
+            let (_, resp) = self.get_rpc().get_listing(req)?;
+            if let Some(mut dir) = resp.dir_list {
+                result.append(&mut dir.partial_listing);
+                if dir.remaining_entries == 0 {
+                    break;
+                }
+                if let Some(last) = result.last() {
+                    start_after = last.path.clone();
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn remove_dir(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
         let req = hdfs_types::hdfs::DeleteRequestProto {
             src: path.as_ref().to_string_lossy().to_string(),
             recursive: false,
@@ -331,7 +362,7 @@ impl<S: Read + Write, D: Read + Write> HDFS<S, D> {
         Ok(())
     }
 
-    pub fn remote_dir_all(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
+    pub fn remove_dir_all(&mut self, path: impl AsRef<Path>) -> Result<(), HDFSError> {
         let req = hdfs_types::hdfs::DeleteRequestProto {
             src: path.as_ref().to_string_lossy().to_string(),
             recursive: true,

@@ -33,6 +33,20 @@ impl<S: Read + Write, D: Read + Write> FileWriter<S, D> {
     }
 }
 
+impl<S: Read + Write, D: Read + Write> FileWriter<S, D> {
+    pub fn close(mut self) -> Result<(), HDFSError> {
+        let b = self.blk_stream.close(&mut self.ipc)?;
+        let req = CompleteRequestProto {
+            src: self.path.clone(),
+            client_name: self.client_name.clone(),
+            last: Some(b),
+            file_id: self.fs.file_id,
+        };
+        self.ipc.complete(req)?;
+        Ok(())
+    }
+}
+
 impl<S: Read + Write, D: Read + Write> Write for FileWriter<S, D> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let offset = self.blk_stream.offset;
@@ -127,37 +141,48 @@ impl WriterOptions {
             ..Default::default()
         };
         let (_, resp) = fs.ipc.append(req)?;
-        let block = resp
-            .block
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no block in append resp"))?;
         let fs_status = resp
             .stat
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no fs status in append resp"))?;
-
-        let stream = block.locs.iter().enumerate().find_map(|(idx, loc)| {
-            match (fs.connect_data_node)(&loc.id, IOType::Append) {
-                Ok(stream) => Some(stream),
-                Err(e) => {
-                    tracing::info!(
-                        "try {} location of block {} failed {e}",
-                        idx + 1,
-                        block.b.block_id
-                    );
-                    None
-                }
+        let blk_stream = match resp.block {
+            Some(block) => {
+                let stream = block.locs.iter().enumerate().find_map(|(idx, loc)| {
+                    match (fs.connect_data_node)(&loc.id, IOType::Append) {
+                        Ok(stream) => Some(stream),
+                        Err(e) => {
+                            tracing::info!(
+                                "try {} location of block {} failed {e}",
+                                idx + 1,
+                                block.b.block_id
+                            );
+                            None
+                        }
+                    }
+                });
+                let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
+                let offset = block.b.num_bytes();
+                BlockWriteStream::create(
+                    fs.client_name.clone(),
+                    stream,
+                    block,
+                    default.bytes_per_checksum,
+                    default.checksum_type(),
+                    offset,
+                    true,
+                )?
             }
-        });
-        let stream = stream.ok_or_else(|| HDFSError::NoAvailableLocation)?;
-        let offset = block.b.num_bytes();
-        let blk_stream = BlockWriteStream::create(
-            fs.client_name.clone(),
-            stream,
-            block,
-            default.bytes_per_checksum,
-            default.checksum_type(),
-            offset,
-            true,
-        )?;
+            None => create_blk(
+                &mut fs.ipc,
+                fs.client_name.clone(),
+                path.clone(),
+                &fs_status,
+                fs.connect_data_node.clone(),
+                &default,
+                None,
+                IOType::Write,
+            )?,
+        };
+
         Ok(FileWriter {
             append: true,
             written: 0,

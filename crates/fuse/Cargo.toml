@@ -6,4 +6,11 @@ version.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
 clap = { workspace = true }
+time = { workspace = true }
+hdfs-client = { path = "../client", features = ["trace_dbg"]}
+fuser = "0.14.0"
+libc = "0.2.151"
+users = "0.11.0"

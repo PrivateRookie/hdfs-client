@@ -7,18 +7,21 @@ use std::{
 };
 
 use clap::Parser;
-use fuser::{FileAttr, MountOption, FUSE_ROOT_ID};
+use fuser::{FileAttr, MountOption, TimeOrNow, FUSE_ROOT_ID};
 use hdfs_client::{
     types::hdfs::{
         CheckAccessRequestProto, CompleteRequestProto, CreateRequestProto, DatanodeReportTypeProto,
         DeleteRequestProto, FsPermissionProto, FsyncRequestProto, GetDatanodeReportRequestProto,
         GetFileInfoRequestProto, GetFsStatusRequestProto, GetLinkTargetRequestProto,
-        GetServerDefaultsRequestProto, GetXAttrsRequestProto, Rename2RequestProto,
-        SetXAttrRequestProto, TruncateRequestProto, XAttrProto,
+        GetServerDefaultsRequestProto, Rename2RequestProto, SetPermissionRequestProto,
+        SetTimesRequestProto, TruncateRequestProto,
     },
     BufStream, HDFSError, HDFS,
 };
-use libc::{EIO, ENOENT, ERANGE};
+use libc::{
+    EACCES, EADDRINUSE, EADDRNOTAVAIL, ECONNABORTED, ECONNREFUSED, ECONNRESET, EEXIST, EIO, ENOENT,
+    ENOMEM, ENOSYS, ENOTCONN, ENOTSUP, EPIPE, EREMOTEIO, ERESTART, ETIMEDOUT, EWOULDBLOCK, EXFULL,
+};
 use time::OffsetDateTime;
 use tracing::Level;
 
@@ -93,7 +96,7 @@ impl FileSystem {
                 resp.fs.ok_or_else(|| {
                     HDFSError::IOError(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
-                        "not found",
+                        format!("{} not found", path),
                     ))
                 })
             })
@@ -159,23 +162,73 @@ macro_rules! handle {
         #[allow(unused)]
         match $result {
             Ok(result) => $ok(result),
-            Err(HDFSError::NameNodeError(e)) => {
-                tracing::warn!("{e:?}");
-                $reply.error(EIO);
-                return;
-            }
-            Err(HDFSError::IOError(e)) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    $reply.error(ENOENT);
-                } else {
-                    $reply.error(EIO);
-                    tracing::warn!("{e}");
-                }
-                return;
-            }
             Err(e) => {
-                tracing::warn!("{e}");
-                $reply.error(ENOENT);
+                match e {
+                    HDFSError::IOError(e) => {
+                        tracing::warn!("{e}");
+                        let eno = match e.kind() {
+                            std::io::ErrorKind::NotFound => ENOENT,
+                            std::io::ErrorKind::PermissionDenied => EACCES,
+                            std::io::ErrorKind::ConnectionRefused => ECONNREFUSED,
+                            std::io::ErrorKind::ConnectionReset => ECONNRESET,
+                            // std::io::ErrorKind::HostUnreachable => libc::EHOSTUNREACH,
+                            // std::io::ErrorKind::NetworkUnreachable => libc::ENETUNREACH,
+                            std::io::ErrorKind::ConnectionAborted => ECONNABORTED,
+                            std::io::ErrorKind::NotConnected => ENOTCONN,
+                            std::io::ErrorKind::AddrInUse => EADDRINUSE,
+                            std::io::ErrorKind::AddrNotAvailable => EADDRNOTAVAIL,
+                            // std::io::ErrorKind::NetworkDown => libc::ENETDOWN,
+                            std::io::ErrorKind::BrokenPipe => EPIPE,
+                            std::io::ErrorKind::AlreadyExists => EEXIST,
+                            std::io::ErrorKind::WouldBlock => EWOULDBLOCK,
+                            // std::io::ErrorKind::NotADirectory => libc::ENOTDIR,
+                            // std::io::ErrorKind::IsADirectory => libc::EISDIR,
+                            // std::io::ErrorKind::DirectoryNotEmpty => libc::ENOTEMPTY,
+                            // std::io::ErrorKind::ReadOnlyFilesystem => libc::EROFS,
+                            // std::io::ErrorKind::FilesystemLoop => libc::ELOOP,
+                            // std::io::ErrorKind::StaleNetworkFileHandle => libc::ESTALE,
+                            std::io::ErrorKind::InvalidInput => EIO,
+                            std::io::ErrorKind::InvalidData => EIO,
+                            std::io::ErrorKind::TimedOut => ETIMEDOUT,
+                            std::io::ErrorKind::WriteZero => EXFULL,
+                            // std::io::ErrorKind::StorageFull => libc::EXFULL,
+                            // std::io::ErrorKind::NotSeekable => libc::ESPIPE,
+                            // std::io::ErrorKind::FilesystemQuotaExceeded => libc::EDQUOT,
+                            // std::io::ErrorKind::FileTooLarge => libc::EFBIG,
+                            // std::io::ErrorKind::ResourceBusy => libc::EBUSY,
+                            // std::io::ErrorKind::ExecutableFileBusy => libc::ETXTBSY,
+                            // std::io::ErrorKind::Deadlock => libc::EDEADLOCK,
+                            // std::io::ErrorKind::CrossesDevices => libc::EXDEV,
+                            // std::io::ErrorKind::TooManyLinks => libc::EMLINK,
+                            // std::io::ErrorKind::InvalidFilename => libc::EILSEQ,
+                            // std::io::ErrorKind::ArgumentListTooLong => libc::EINVAL,
+                            std::io::ErrorKind::Interrupted => ERESTART,
+                            std::io::ErrorKind::Unsupported => ENOTSUP,
+                            std::io::ErrorKind::UnexpectedEof => EIO,
+                            std::io::ErrorKind::OutOfMemory => ENOMEM,
+                            std::io::ErrorKind::Other => EIO,
+                            _ => EIO,
+                        };
+                        $reply.error(eno);
+                    }
+                    HDFSError::EncodeError(_)
+                    | HDFSError::DecodeError(_)
+                    | HDFSError::ChecksumError
+                    | HDFSError::NoAvailableBlock
+                    | HDFSError::NoAvailableLocation
+                    | HDFSError::EmptyFS => {
+                        tracing::warn!("{e}");
+                        $reply.error(EIO);
+                    }
+                    HDFSError::DataNodeError(e) => {
+                        tracing::warn!("data node response error: {}", e.message());
+                        $reply.error(EREMOTEIO);
+                    }
+                    HDFSError::NameNodeError(e) => {
+                        tracing::warn!("name node response error: {}", e.error_msg());
+                        $reply.error(EREMOTEIO);
+                    }
+                };
                 return;
             }
         }
@@ -183,23 +236,73 @@ macro_rules! handle {
     (= $result:expr, $reply:ident) => {
         match $result {
             Ok(result) => result,
-            Err(HDFSError::NameNodeError(e)) => {
-                tracing::warn!("{e:?}");
-                $reply.error(EIO);
-                return;
-            }
-            Err(HDFSError::IOError(e)) => {
-                tracing::warn!("{e:?}");
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    $reply.error(ENOENT);
-                } else {
-                    $reply.error(EIO);
-                }
-                return;
-            }
             Err(e) => {
-                tracing::warn!("{e:?}");
-                $reply.error(ENOENT);
+                match e {
+                    HDFSError::IOError(e) => {
+                        tracing::warn!("{e}");
+                        let eno = match e.kind() {
+                            std::io::ErrorKind::NotFound => ENOENT,
+                            std::io::ErrorKind::PermissionDenied => EACCES,
+                            std::io::ErrorKind::ConnectionRefused => ECONNREFUSED,
+                            std::io::ErrorKind::ConnectionReset => ECONNRESET,
+                            // std::io::ErrorKind::HostUnreachable => libc::EHOSTUNREACH,
+                            // std::io::ErrorKind::NetworkUnreachable => libc::ENETUNREACH,
+                            std::io::ErrorKind::ConnectionAborted => ECONNABORTED,
+                            std::io::ErrorKind::NotConnected => ENOTCONN,
+                            std::io::ErrorKind::AddrInUse => EADDRINUSE,
+                            std::io::ErrorKind::AddrNotAvailable => EADDRNOTAVAIL,
+                            // std::io::ErrorKind::NetworkDown => libc::ENETDOWN,
+                            std::io::ErrorKind::BrokenPipe => EPIPE,
+                            std::io::ErrorKind::AlreadyExists => EEXIST,
+                            std::io::ErrorKind::WouldBlock => EWOULDBLOCK,
+                            // std::io::ErrorKind::NotADirectory => libc::ENOTDIR,
+                            // std::io::ErrorKind::IsADirectory => libc::EISDIR,
+                            // std::io::ErrorKind::DirectoryNotEmpty => libc::ENOTEMPTY,
+                            // std::io::ErrorKind::ReadOnlyFilesystem => libc::EROFS,
+                            // std::io::ErrorKind::FilesystemLoop => libc::ELOOP,
+                            // std::io::ErrorKind::StaleNetworkFileHandle => libc::ESTALE,
+                            std::io::ErrorKind::InvalidInput => EIO,
+                            std::io::ErrorKind::InvalidData => EIO,
+                            std::io::ErrorKind::TimedOut => ETIMEDOUT,
+                            std::io::ErrorKind::WriteZero => EXFULL,
+                            // std::io::ErrorKind::StorageFull => libc::EXFULL,
+                            // std::io::ErrorKind::NotSeekable => libc::ESPIPE,
+                            // std::io::ErrorKind::FilesystemQuotaExceeded => libc::EDQUOT,
+                            // std::io::ErrorKind::FileTooLarge => libc::EFBIG,
+                            // std::io::ErrorKind::ResourceBusy => libc::EBUSY,
+                            // std::io::ErrorKind::ExecutableFileBusy => libc::ETXTBSY,
+                            // std::io::ErrorKind::Deadlock => libc::EDEADLOCK,
+                            // std::io::ErrorKind::CrossesDevices => libc::EXDEV,
+                            // std::io::ErrorKind::TooManyLinks => libc::EMLINK,
+                            // std::io::ErrorKind::InvalidFilename => libc::EILSEQ,
+                            // std::io::ErrorKind::ArgumentListTooLong => libc::EINVAL,
+                            std::io::ErrorKind::Interrupted => ERESTART,
+                            std::io::ErrorKind::Unsupported => ENOTSUP,
+                            std::io::ErrorKind::UnexpectedEof => EIO,
+                            std::io::ErrorKind::OutOfMemory => ENOMEM,
+                            std::io::ErrorKind::Other => EIO,
+                            _ => EIO,
+                        };
+                        $reply.error(eno);
+                    }
+                    HDFSError::EncodeError(_)
+                    | HDFSError::DecodeError(_)
+                    | HDFSError::ChecksumError
+                    | HDFSError::NoAvailableBlock
+                    | HDFSError::NoAvailableLocation
+                    | HDFSError::EmptyFS => {
+                        tracing::warn!("{e}");
+                        $reply.error(EIO);
+                    }
+                    HDFSError::DataNodeError(e) => {
+                        tracing::warn!("data node response error: {}", e.message());
+                        $reply.error(EREMOTEIO);
+                    }
+                    HDFSError::NameNodeError(e) => {
+                        tracing::warn!("name node response error: {}", e.error_msg());
+                        $reply.error(EREMOTEIO);
+                    }
+                };
                 return;
             }
         }
@@ -229,10 +332,6 @@ impl fuser::Filesystem for FileSystem {
         })
     }
 
-    fn forget(&mut self, _req: &fuser::Request<'_>, ino: u64, _nlookup: u64) {
-        self.ino_map.remove(&ino);
-    }
-
     fn getattr(&mut self, _req: &fuser::Request<'_>, ino: u64, reply: fuser::ReplyAttr) {
         let path = try_get!(self, ino, reply).clone();
         handle!(self.get_file_attr(path), reply, |attr| reply
@@ -245,26 +344,102 @@ impl fuser::Filesystem for FileSystem {
         handle!(self.client.get_rpc().check_access(req), reply);
     }
 
-    // TODO
+    fn symlink(
+        &mut self,
+        _req: &fuser::Request<'_>,
+        _parent: u64,
+        _link_name: &std::ffi::OsStr,
+        _target: &std::path::Path,
+        reply: fuser::ReplyEntry,
+    ) {
+        reply.error(ENOSYS);
+    }
+
     fn setattr(
         &mut self,
         _req: &fuser::Request<'_>,
         ino: u64,
-        _mode: Option<u32>,
-        _uid: Option<u32>,
-        _gid: Option<u32>,
-        _size: Option<u64>,
-        _atime: Option<fuser::TimeOrNow>,
-        _mtime: Option<fuser::TimeOrNow>,
-        _ctime: Option<SystemTime>,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        ctime: Option<SystemTime>,
         _fh: Option<u64>,
-        _crtime: Option<SystemTime>,
-        _chgtime: Option<SystemTime>,
-        _bkuptime: Option<SystemTime>,
+        crtime: Option<SystemTime>,
+        chgtime: Option<SystemTime>,
+        bkuptime: Option<SystemTime>,
         _flags: Option<u32>,
         reply: fuser::ReplyAttr,
     ) {
         let path = try_get!(self, ino, reply).clone();
+        let attr = handle!(=self.get_file_attr(path.clone()), reply);
+        if let Some(mode) = mode {
+            let req = SetPermissionRequestProto {
+                src: path.clone(),
+                permission: FsPermissionProto { perm: mode },
+            };
+            handle!(self.client.get_rpc().set_permission(req), &reply);
+        }
+        if uid.is_some() || gid.is_some() {
+            tracing::warn!("uid and gid is not supported");
+        }
+        if let Some(size) = size {
+            if size < attr.size {
+                let req = TruncateRequestProto {
+                    src: path.clone(),
+                    new_length: size,
+                    client_name: self.client.client_name().to_string(),
+                };
+                handle!(self.client.get_rpc().truncate(req), &reply);
+            } else if size > attr.size {
+                let buf = [0; 819200];
+                let mut to_write = (size - attr.size) as usize;
+                let mut fd = handle!(=self.client.append(path.clone()), reply);
+                while to_write > 0 {
+                    let idx = buf.len().min(to_write);
+                    if let Err(e) = fd.write_all(&buf[..idx]) {
+                        tracing::error!("{e}");
+                        reply.error(EIO);
+                        return;
+                    };
+                    to_write -= idx;
+                }
+            }
+        }
+        let atime = atime.map(convert_time);
+        let mtime = mtime.map(convert_time);
+        if atime.is_some() || mtime.is_some() {
+            let req = SetTimesRequestProto {
+                src: path.clone(),
+                mtime: mtime.unwrap_or(
+                    attr.mtime
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                ),
+                atime: atime.unwrap_or(
+                    attr.atime
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                ),
+            };
+            handle!(self.client.get_rpc().set_times(req), &reply);
+        }
+        if ctime.is_some() {
+            tracing::warn!("ctime is not supported");
+        }
+        if crtime.is_some() {
+            tracing::warn!("crtime is not supported");
+        }
+        if chgtime.is_some() {
+            tracing::warn!("chgtime is not supported");
+        }
+        if bkuptime.is_some() {
+            tracing::warn!("bkuptime is not supported");
+        }
         handle!(self.get_file_attr(path), reply, |attr| reply
             .attr(&TTL, &attr));
     }
@@ -401,17 +576,6 @@ impl fuser::Filesystem for FileSystem {
         }
     }
 
-    // fn flush(
-    //     &mut self,
-    //     _req: &fuser::Request<'_>,
-    //     ino: u64,
-    //     _fh: u64,
-    //     _lock_owner: u64,
-    //     reply: fuser::ReplyEmpty,
-    // ) {
-
-    // }
-
     fn mkdir(
         &mut self,
         _req: &fuser::Request<'_>,
@@ -490,7 +654,8 @@ impl fuser::Filesystem for FileSystem {
         let path = try_get!(self, ino, reply);
         let mut fd = handle!(= self.client.open(path), reply);
         if offset != 0 {
-            if fd.seek(std::io::SeekFrom::Start(offset as u64)).is_err() {
+            if let Err(e) = fd.seek(std::io::SeekFrom::Start(offset as u64)) {
+                tracing::warn!("{e}");
                 reply.error(EIO);
                 return;
             }
@@ -506,7 +671,7 @@ impl fuser::Filesystem for FileSystem {
                 tracing::error!("{e}");
                 reply.error(EIO);
             }
-        }
+        };
     }
 
     fn write(
@@ -521,14 +686,32 @@ impl fuser::Filesystem for FileSystem {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyWrite,
     ) {
-        let path = try_get!(self, ino, reply);
-        let req = TruncateRequestProto {
-            src: path.clone(),
-            new_length: offset as u64,
-            client_name: self.client.client_name().to_string(),
-        };
-        handle!(self.client.get_rpc().truncate(req), &reply);
+        let path = try_get!(self, ino, reply).clone();
+        let attr = handle!(=self.get_file_attr(path.clone()), reply);
+        let offset = offset as u64;
+        if offset < attr.size {
+            let req = TruncateRequestProto {
+                src: path.clone(),
+                new_length: offset as u64,
+                client_name: self.client.client_name().to_string(),
+            };
+            handle!(self.client.get_rpc().truncate(req), &reply);
+        }
         let mut fd = handle!(= self.client.append(&path), reply);
+        if offset > attr.size {
+            let buf = [0; 8192];
+            let mut to_write = (offset - attr.size) as usize;
+            let mut fd = handle!(=self.client.append(path.clone()), reply);
+            while to_write > 0 {
+                let idx = buf.len().min(to_write);
+                if let Err(e) = fd.write_all(&buf[..idx]) {
+                    tracing::error!("{e}");
+                    reply.error(EIO);
+                    return;
+                };
+                to_write -= idx;
+            }
+        }
         match fd
             .write_all(data)
             .and_then(|_| fd.close().map_err(|e| e.into()))
@@ -729,6 +912,16 @@ impl fuser::Filesystem for FileSystem {
             recursive: false,
         };
         handle!(self.client.get_rpc().delete(req), reply);
+    }
+}
+
+fn convert_time(t: TimeOrNow) -> u64 {
+    match t {
+        TimeOrNow::SpecificTime(st) => st
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_else(|_| now_millis()),
+        TimeOrNow::Now => now_millis(),
     }
 }
 

@@ -46,8 +46,8 @@ impl Default for ClientConfig {
             effective_user: Default::default(),
             name_node: vec!["127.0.0.1:9000".into()],
             use_hostname: true,
-            write_buf_size: 8192,
-            read_buf_size: 8192,
+            write_buf_size: 64 * 1024,
+            read_buf_size: 64 * 1024,
             connection_timeout: 30,
             tcp_keepalived: Some(30),
             no_delay: true,
@@ -377,8 +377,7 @@ impl<S: Read + Write, D: Read + Write> HDFS<S, D> {
             src: path.as_ref().to_string_lossy().to_string(),
             recursive: false,
         };
-        let (_, resp) = self.ipc.delete(req)?;
-        assert!(resp.result);
+        self.ipc.delete(req)?;
         Ok(())
     }
 

@@ -56,7 +56,7 @@ impl<S: Read + Write, D: Read + Write> Write for FileWriter<S, D> {
             self.blk_stream.write(left, false)?;
             let mut prev = self.blk_stream.close(&mut self.ipc)?;
             let remain = &buf[split_idx..];
-            let parts = remain.len() / self.block_size as usize;
+            let parts = remain.len().div_ceil(self.block_size as usize);
             for (idx, chunk) in remain.chunks(self.block_size as usize).enumerate() {
                 let is_last = idx + 1 == parts;
                 let mut blk = create_blk(

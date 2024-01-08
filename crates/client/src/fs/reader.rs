@@ -126,7 +126,7 @@ impl<D: Read + Write> Read for FileReader<D> {
         if let Some(stream) = &mut self.blk_stream {
             let num = stream.read(buf)?;
             self.read += num;
-            if stream.packet_remain == 0 {
+            if stream.remaining() == 0 {
                 self.block_idx += 1;
                 if let Some(block) = self.locations.blocks.get(self.block_idx).cloned() {
                     let blk_stream = create_blk_stream(
@@ -190,21 +190,20 @@ impl<D: Read + Write> FileReader<D> {
                     &self.connect_data_node,
                     self.client_name.clone(),
                     self.checksum,
-                    0,
+                    offset,
                 )?);
-                // FIXME can not set direct offset of hdfs block
-                let mut tmp = vec![0; offset as usize];
-                if let Some(stream) = &mut self.blk_stream {
-                    stream.read_exact(&mut tmp)?;
-                }
+            }
+            if !self.locations.blocks.is_empty() {
+                self.block_idx = self.locations.blocks.len() - 1;
             }
             Ok(locations.file_length)
         } else {
-            let block = locations
+            let (blk_idx, block) = locations
                 .blocks
                 .clone()
                 .into_iter()
-                .find(|blk| blk.offset + blk.b.num_bytes() > pos)
+                .enumerate()
+                .find(|(_, blk)| blk.offset + blk.b.num_bytes() > pos)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no matched block found"))?;
             let offset = pos - block.offset;
             self.blk_stream = Some(create_blk_stream(
@@ -214,11 +213,7 @@ impl<D: Read + Write> FileReader<D> {
                 self.checksum,
                 offset,
             )?);
-            // FIXME can not set direct offset of hdfs block
-            let mut tmp = vec![0; offset as usize];
-            if let Some(stream) = &mut self.blk_stream {
-                stream.read_exact(&mut tmp)?;
-            }
+            self.block_idx = blk_idx;
             self.read = pos as usize;
             Ok(pos)
         }

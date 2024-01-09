@@ -168,12 +168,12 @@ fn convert_fs(fs: hdfs_client::types::hdfs::HdfsFileStatusProto) -> FileAttr {
         kind: convert_ty(fs.file_type()),
         perm: fs.permission.perm as u16,
         nlink: 0,
-        uid: users::get_user_by_name(&fs.owner)
+        uid: uzers::get_user_by_name(&fs.owner)
             .map(|u| u.uid())
-            .unwrap_or_else(users::get_current_uid),
-        gid: users::get_user_by_name(&fs.group)
+            .unwrap_or_else(uzers::get_current_uid),
+        gid: uzers::get_user_by_name(&fs.group)
             .map(|u| u.uid())
-            .unwrap_or_else(users::get_current_gid),
+            .unwrap_or_else(uzers::get_current_gid),
         rdev: 0,
         blksize: fs.blocksize() as u32,
         flags: fs.flags(),

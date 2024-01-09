@@ -12,9 +12,8 @@ use hdfs_client::{
     types::hdfs::{
         CheckAccessRequestProto, CompleteRequestProto, CreateRequestProto, DatanodeReportTypeProto,
         DeleteRequestProto, FsPermissionProto, FsyncRequestProto, GetDatanodeReportRequestProto,
-        GetFileInfoRequestProto, GetFsStatusRequestProto, GetLinkTargetRequestProto,
-        GetServerDefaultsRequestProto, Rename2RequestProto, SetPermissionRequestProto,
-        SetTimesRequestProto, TruncateRequestProto,
+        GetFileInfoRequestProto, GetFsStatusRequestProto, GetServerDefaultsRequestProto,
+        Rename2RequestProto, SetPermissionRequestProto, SetTimesRequestProto, TruncateRequestProto,
     },
     BufStream, HDFSError, HDFS,
 };
@@ -22,34 +21,72 @@ use libc::{
     EACCES, EADDRINUSE, EADDRNOTAVAIL, ECONNABORTED, ECONNREFUSED, ECONNRESET, EEXIST, EIO, ENOENT,
     ENOMEM, ENOSYS, ENOTCONN, ENOTSUP, EPIPE, EREMOTEIO, ERESTART, ETIMEDOUT, EWOULDBLOCK, EXFULL,
 };
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 use tracing::Level;
+use tracing_rolling::Checker;
+use tracing_subscriber::fmt::time::OffsetTime;
 
+/// HDFS via fuse
 #[derive(Debug, Parser)]
 struct Cmd {
+    /// name node address, hostname is supported too
     #[arg(long, default_value = "127.0.0.1:9000")]
     name_node: String,
+    #[arg(long)]
+    /// backup name node address
+    backup_name_node: Option<String>,
+    /// connection user name
     #[arg(long, env = "USER")]
     user: String,
+    /// log level
     #[arg(long, default_value = "INFO")]
     level: Level,
+    /// log file path
+    #[arg(long)]
+    log: Option<PathBuf>,
+    /// timezone offset hour
+    #[arg(long, default_value = "0")]
+    offset: i8,
+    /// mouth point
     mount: PathBuf,
 }
 
 fn main() {
     let cmd = Cmd::parse();
-    tracing_subscriber::fmt()
+    let offset = UtcOffset::from_hms(cmd.offset, 0, 0).expect("invalid offset");
+    let fmt = tracing_subscriber::fmt()
         .with_max_level(cmd.level)
-        .pretty()
-        .init();
-    let client = HDFS::connect(cmd.name_node, cmd.user).unwrap();
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(true)
+        .with_timer(OffsetTime::new(
+            offset,
+            time::format_description::well_known::Rfc3339,
+        ));
+    let token = if let Some(log) = cmd.log {
+        let (writer, token) = tracing_rolling::ConstFile::new(log)
+            .buffered()
+            .build()
+            .expect("failed to init log file");
+        fmt.with_ansi(false).with_writer(writer).init();
+        Some(token)
+    } else {
+        fmt.init();
+        None
+    };
+    let mut addr = vec![cmd.name_node];
+    if let Some(backup) = cmd.backup_name_node {
+        addr.push(backup)
+    };
+    let client = HDFS::connect(addr, cmd.user).unwrap();
     let fs = FileSystem::new(client);
     fuser::mount2(
         fs,
         cmd.mount,
         &[MountOption::AutoUnmount, MountOption::AllowRoot],
     )
-    .unwrap()
+    .unwrap();
+    drop(token);
 }
 
 struct FileSystem {
@@ -102,7 +139,6 @@ impl FileSystem {
             })
             .map(|fs| {
                 self.ino_map.insert(fs.file_id(), path);
-
                 convert_fs(fs)
             })
     }
@@ -165,7 +201,7 @@ macro_rules! handle {
             Err(e) => {
                 match e {
                     HDFSError::IOError(e) => {
-                        tracing::warn!("{e}");
+                        tracing::debug!("{e}");
                         let eno = match e.kind() {
                             std::io::ErrorKind::NotFound => ENOENT,
                             std::io::ErrorKind::PermissionDenied => EACCES,
@@ -217,15 +253,15 @@ macro_rules! handle {
                     | HDFSError::NoAvailableBlock
                     | HDFSError::NoAvailableLocation
                     | HDFSError::EmptyFS => {
-                        tracing::warn!("{e}");
+                        tracing::debug!("{e}");
                         $reply.error(EIO);
                     }
                     HDFSError::DataNodeError(e) => {
-                        tracing::warn!("data node response error: {}", e.message());
+                        tracing::debug!("data node response error: {}", e.message());
                         $reply.error(EREMOTEIO);
                     }
                     HDFSError::NameNodeError(e) => {
-                        tracing::warn!("name node response error: {}", e.error_msg());
+                        tracing::debug!("name node response error: {}", e.error_msg());
                         $reply.error(EREMOTEIO);
                     }
                 };
@@ -239,7 +275,7 @@ macro_rules! handle {
             Err(e) => {
                 match e {
                     HDFSError::IOError(e) => {
-                        tracing::warn!("{e}");
+                        tracing::debug!("{e}");
                         let eno = match e.kind() {
                             std::io::ErrorKind::NotFound => ENOENT,
                             std::io::ErrorKind::PermissionDenied => EACCES,
@@ -291,15 +327,15 @@ macro_rules! handle {
                     | HDFSError::NoAvailableBlock
                     | HDFSError::NoAvailableLocation
                     | HDFSError::EmptyFS => {
-                        tracing::warn!("{e}");
+                        tracing::debug!("{e}");
                         $reply.error(EIO);
                     }
                     HDFSError::DataNodeError(e) => {
-                        tracing::warn!("data node response error: {}", e.message());
+                        tracing::debug!("data node response error: {}", e.message());
                         $reply.error(EREMOTEIO);
                     }
                     HDFSError::NameNodeError(e) => {
-                        tracing::warn!("name node response error: {}", e.error_msg());
+                        tracing::debug!("name node response error: {}", e.error_msg());
                         $reply.error(EREMOTEIO);
                     }
                 };
@@ -448,17 +484,16 @@ impl fuser::Filesystem for FileSystem {
             .attr(&TTL, &attr));
     }
 
-    // TODO
-    fn readlink(&mut self, _req: &fuser::Request<'_>, ino: u64, reply: fuser::ReplyData) {
-        let path = try_get!(self, ino, reply).clone();
-        let req = GetLinkTargetRequestProto { path };
-        let (_, resp) = handle!(= self.client.get_rpc().get_link_target(req), reply);
-        if let Some(p) = resp.target_path {
-            reply.data(p.as_bytes());
-        } else {
-            reply.error(ENOENT);
-        }
-    }
+    // fn readlink(&mut self, _req: &fuser::Request<'_>, ino: u64, reply: fuser::ReplyData) {
+    //     let path = try_get!(self, ino, reply).clone();
+    //     let req = GetLinkTargetRequestProto { path };
+    //     let (_, resp) = handle!(= self.client.get_rpc().get_link_target(req), reply);
+    //     if let Some(p) = resp.target_path {
+    //         reply.data(p.as_bytes());
+    //     } else {
+    //         reply.error(ENOENT);
+    //     }
+    // }
 
     fn mknod(
         &mut self,
@@ -616,7 +651,7 @@ impl fuser::Filesystem for FileSystem {
         let src = concat_name(parent, name);
         let req = hdfs_client::types::hdfs::DeleteRequestProto {
             src,
-            recursive: false,
+            recursive: true,
         };
         handle!(self.client.get_rpc().delete(req), reply);
     }

@@ -102,14 +102,14 @@ impl FileSystem {
             })
             .map(|fs| {
                 self.ino_map.insert(fs.file_id(), path);
-                let attr = convert_fs(fs);
-                attr
+
+                convert_fs(fs)
             })
     }
 }
 
 fn convert_fs(fs: hdfs_client::types::hdfs::HdfsFileStatusProto) -> FileAttr {
-    let attr = FileAttr {
+    FileAttr {
         ino: fs.file_id(),
         size: fs.length,
         blocks: fs
@@ -134,15 +134,14 @@ fn convert_fs(fs: hdfs_client::types::hdfs::HdfsFileStatusProto) -> FileAttr {
         nlink: 0,
         uid: users::get_user_by_name(&fs.owner)
             .map(|u| u.uid())
-            .unwrap_or_else(|| users::get_current_uid()),
+            .unwrap_or_else(users::get_current_uid),
         gid: users::get_user_by_name(&fs.group)
             .map(|u| u.uid())
-            .unwrap_or_else(|| users::get_current_gid()),
+            .unwrap_or_else(users::get_current_gid),
         rdev: 0,
         blksize: fs.blocksize() as u32,
         flags: fs.flags(),
-    };
-    attr
+    }
 }
 
 macro_rules! try_get {
@@ -160,6 +159,7 @@ macro_rules! try_get {
 macro_rules! handle {
     ($result:expr, $reply:ident, $ok:expr) => {
         #[allow(unused)]
+        #[allow(clippy::redundant_closure_call)]
         match $result {
             Ok(result) => $ok(result),
             Err(e) => {
@@ -386,26 +386,30 @@ impl fuser::Filesystem for FileSystem {
             tracing::warn!("uid and gid is not supported");
         }
         if let Some(size) = size {
-            if size < attr.size {
-                let req = TruncateRequestProto {
-                    src: path.clone(),
-                    new_length: size,
-                    client_name: self.client.client_name().to_string(),
-                };
-                handle!(self.client.get_rpc().truncate(req), &reply);
-            } else if size > attr.size {
-                let buf = [0; 819200];
-                let mut to_write = (size - attr.size) as usize;
-                let mut fd = handle!(=self.client.append(path.clone()), reply);
-                while to_write > 0 {
-                    let idx = buf.len().min(to_write);
-                    if let Err(e) = fd.write_all(&buf[..idx]) {
-                        tracing::error!("{e}");
-                        reply.error(EIO);
-                        return;
+            match size.cmp(&attr.size) {
+                std::cmp::Ordering::Less => {
+                    let req = TruncateRequestProto {
+                        src: path.clone(),
+                        new_length: size,
+                        client_name: self.client.client_name().to_string(),
                     };
-                    to_write -= idx;
+                    handle!(self.client.get_rpc().truncate(req), &reply);
                 }
+                std::cmp::Ordering::Greater => {
+                    let buf = [0; 819200];
+                    let mut to_write = (size - attr.size) as usize;
+                    let mut fd = handle!(=self.client.append(path.clone()), reply);
+                    while to_write > 0 {
+                        let idx = buf.len().min(to_write);
+                        if let Err(e) = fd.write_all(&buf[..idx]) {
+                            tracing::error!("{e}");
+                            reply.error(EIO);
+                            return;
+                        };
+                        to_write -= idx;
+                    }
+                }
+                std::cmp::Ordering::Equal => {}
             }
         }
         let atime = atime.map(convert_time);
@@ -692,7 +696,7 @@ impl fuser::Filesystem for FileSystem {
         if offset < attr.size {
             let req = TruncateRequestProto {
                 src: path.clone(),
-                new_length: offset as u64,
+                new_length: offset,
                 client_name: self.client.client_name().to_string(),
             };
             handle!(self.client.get_rpc().truncate(req), &reply);
@@ -926,10 +930,9 @@ fn convert_time(t: TimeOrNow) -> u64 {
 }
 
 fn concat_name(current_parent: &String, name: &std::ffi::OsStr) -> String {
-    let current_name = if current_parent == "/" {
+    if current_parent == "/" {
         format!("/{}", name.to_string_lossy())
     } else {
         format!("{current_parent}/{}", name.to_string_lossy())
-    };
-    current_name
+    }
 }

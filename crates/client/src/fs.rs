@@ -209,7 +209,7 @@ impl HDFS<BufStream<TcpStream>, BufStream<TcpStream>> {
                         hostname = datanode.host_name,
                         port = datanode.xfer_port
                     );
-                    ((datanode.host_name.as_str(), datanode.xfer_port as u16))
+                    (datanode.host_name.as_str(), datanode.xfer_port as u16)
                         .to_socket_addrs()
                         .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid address"))?
                 } else {
@@ -218,7 +218,7 @@ impl HDFS<BufStream<TcpStream>, BufStream<TcpStream>> {
                         ip = datanode.ip_addr,
                         port = datanode.xfer_port
                     );
-                    ((datanode.ip_addr.as_str(), datanode.xfer_port as u16))
+                    (datanode.ip_addr.as_str(), datanode.xfer_port as u16)
                         .to_socket_addrs()
                         .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid ip addr"))?
                 };

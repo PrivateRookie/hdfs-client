@@ -4,15 +4,13 @@ use hdfs_client::HDFS;
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::INFO)
         .pretty()
         .init();
     let mut fs = HDFS::connect("localhost:9000", "root").unwrap();
 
     let mut fd = fs.create("/test/hello.txt").unwrap();
-    // FIXME write 512 will hang
-    fd.write_all(include_bytes!("../../../target/test.txt"))
-        .unwrap();
+    fd.write_all(b"hello").unwrap();
     // for i in 0..1 {
     //     tracing::info!(seq = i);
     //     writeln!(fd, "[{i:0>2}] Hello World").unwrap();

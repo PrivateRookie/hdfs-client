@@ -249,6 +249,7 @@ impl WriterOptions {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_blk<S: Read + Write, D: Read + Write>(
     ipc: &mut HRpc<S>,
     client_name: String,

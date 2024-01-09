@@ -6,7 +6,9 @@ description = "hdfs types used by hdfs-client"
 keywords = ["hdfs", "hadoop"]
 authors = ["PrivateRookie <996514515@qq.com>"]
 license-file = "LICENSE"
-
+documentation = "https://docs.rs/hdfs-client/latest/hdfs_types"
+homepage.workspace = true
+repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]

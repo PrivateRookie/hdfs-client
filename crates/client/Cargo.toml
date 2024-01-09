@@ -6,6 +6,9 @@ description = "hdfs rust native client"
 keywords = ["hdfs", "hadoop"]
 authors = ["PrivateRookie <996514515@qq.com>"]
 license-file = "LICENSE"
+documentation = "https://docs.rs/hdfs-client/latest/hdfs_client"
+homepage.workspace = true
+repository.workspace = true
 
 [features]
 default = []

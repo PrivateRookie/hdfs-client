@@ -6,6 +6,9 @@ description = "HDFS user space file system"
 keywords = ["hdfs", "hadoop", "fuse", "filesystem"]
 authors = ["PrivateRookie <996514515@qq.com>"]
 license-file = "LICENSE"
+documentation = "https://docs.rs/hdfs-client/latest/hdfs_fuse"
+homepage.workspace = true
+repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]

@@ -1,7 +1,9 @@
 [workspace]
 members = ["crates/*"]
 resolver = "2"
-package.version = "0.1.0"
+package.version = "0.2.0"
+package.homepage = "https://github.com/PrivateRookie/hdfs-client"
+package.repository = "https://github.com/PrivateRookie/hdfs-client"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive", "env"] }
